@@ -18,11 +18,47 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { DSH_HOME } from './paths.js';
+import { spawn } from 'node:child_process';
+import { DSH_HOME, QQBOT_ROOT } from './paths.js';
+import { readUnified } from './store.js';
+import { isModuleEnabled } from './modules.js';
 
 const HUB_TTL = 5_000;
 const PROBE_TIMEOUT = 2_500;
+const INSTALL_TIMEOUT = 180_000;
 const SHARED_PLUGINS_DIR = path.join(DSH_HOME, 'shared', 'plugins');
+// 平台插件推荐清单（随插件分发，位于聚合包仓库根 market/）：点名的 id 视为平台插件，
+// 和 dfy.platform 清单并列。PLUGIN_ROOT 指向 <仓库根>/backend，所以用 QQBOT_ROOT（仓库根）。
+const RECOMMENDATIONS_FILE = path.join(QQBOT_ROOT, 'market', 'recommendations.json');
+
+/**
+ * 平台子页注册表：「设置 → dsh-Dfy → 平台」里每个子页由谁提供。
+ *   builtin = dsh-Dfy 自带实现（走 modules.<id> 开关）；
+ *   plugins = 能接管这个平台的社区插件（候选，装了就在子页里显示状态/接管入口，
+ *             一个都没装且内置也没启用 → 子页显示「未安装 + 一键安装」）。
+ */
+const PLATFORM_TABS = [
+  { id: 'bili', label: '养鱼（B站）', module: 'bili', builtin: true, plugins: [] },
+  {
+    id: 'douyin', label: '抖音', module: 'douyin', builtin: true,
+    plugins: [{ id: 'dsh-douyin-watch', repo: 'github:miqian-nomad/dsh-douyin-watch', covers: '抖音私信/评论自动化（新私信叫醒、回私信、发评论、回楼中楼）' }],
+  },
+  {
+    id: 'tieba', label: '贴吧', module: '', builtin: false,
+    plugins: [{ id: 'dsh-tieba-dive', repo: 'github:Nekomeow114/dsh-tieba-dive', covers: '贴吧整套：读帖/日报/签到/可选回帖，自带人设与风格库' }],
+  },
+  {
+    id: 'qq', label: 'QQ', module: 'qq', builtin: true,
+    plugins: [{ id: 'dsh-dot', repo: 'github:Kevinwu901113/dsh-dot', covers: '聚合养鱼套件：QQ（SnowLuma/NapCat）+ 安卓模拟器刷 B站/微博/小红书 + 人设/记忆/日记' }],
+  },
+];
+
+/** 推荐清单里点名的平台插件 id 集合（读不到就当空，不阻断发现）。 */
+function recommendedPlatformIds() {
+  const data = readJsonSafe(RECOMMENDATIONS_FILE);
+  const list = Array.isArray(data?.recommendations) ? data.recommendations : [];
+  return new Set(list.map((item) => normalizeName(item?.id)).filter(Boolean));
+}
 
 function readJsonSafe(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
@@ -131,6 +167,7 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
   function scan() {
     const now = Date.now();
     if (cache && now - cacheAt < HUB_TTL) return cache;
+    const recommended = recommendedPlatformIds();
     const packages = listInstalledPackages({ selfName });
     const byKey = new Map();
     const plugins = packages.map((pkg) => ({
@@ -141,6 +178,7 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
       source: 'package',
       provides: [],
       statusPath: '',
+      platform: recommended.has(normalizeName(pkg.name)),
       installed: true,
       stale: false,
     }));
@@ -149,10 +187,11 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
     for (const [key, manifest] of listSharedManifests()) {
       const hit = byKey.get(key);
       if (hit) {
-        // 清单给已装包补充运行态探针与能力声明
+        // 清单给已装包补充运行态探针与能力声明；声明了 dfy.platform 就是平台插件
         hit.source = 'manifest';
         hit.provides = manifest.provides;
         hit.statusPath = manifest.statusPath;
+        hit.platform = hit.platform || manifest.provides.includes('dfy.platform');
         if (manifest.summary && !hit.summary) hit.summary = manifest.summary;
       } else {
         // 清单在、包没了：插件被卸载但清单残留（提醒用户可手动删）
@@ -164,6 +203,7 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
           source: 'manifest',
           provides: manifest.provides,
           statusPath: manifest.statusPath,
+          platform: manifest.provides.includes('dfy.platform'),
           installed: false,
           stale: true,
         });
@@ -188,15 +228,107 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
     }
   }
 
+  /** 平台子页载荷：每个子页由内置还是插件提供、候选插件装没装。 */
+  function tabs() {
+    const installed = scan();
+    return PLATFORM_TABS.map((tab) => ({
+      id: tab.id,
+      label: tab.label,
+      module: tab.module,
+      builtin: Boolean(tab.builtin),
+      builtinEnabled: tab.module ? isModuleEnabled(readUnified().config, tab.module) : false,
+      plugins: (tab.plugins ?? []).map((cand) => {
+        const hit = installed.find((p) => p.installed && normalizeName(p.name) === normalizeName(cand.id));
+        return {
+          id: cand.id,
+          repo: cand.repo,
+          covers: cand.covers ?? '',
+          installed: Boolean(hit),
+          statusPath: hit?.statusPath ?? '',
+          summary: hit?.summary ?? '',
+        };
+      }),
+    }));
+  }
+
+  /** 识别本插件跑在哪个 profile：哪个 profile 的 node_modules 里 dsh-dfy 指向本仓库，就是它。 */
+  function detectProfile() {
+    let selfReal = '';
+    try { selfReal = fs.realpathSync(QQBOT_ROOT); } catch { return ''; }
+    const profilesDir = path.join(DSH_HOME, 'profiles');
+    let entries = [];
+    try { entries = fs.readdirSync(profilesDir, { withFileTypes: true }); } catch { return ''; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const link = path.join(profilesDir, entry.name, 'node_modules', selfName);
+        const real = fs.realpathSync(link);
+        if (real === selfReal) return entry.name;
+      } catch { continue; }
+    }
+    return '';
+  }
+
+  /** 装完把插件名写进 profile 的 dsh.profile.bundles（CLI add 不自动启用，setup-dsh.mjs 同款做法）。 */
+  function enableInProfile(profile, pluginName) {
+    try {
+      const file = path.join(DSH_HOME, 'profiles', profile, 'package.json');
+      const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const bundles = pkg?.dsh?.profile?.bundles;
+      if (!Array.isArray(bundles)) return false;
+      if (!bundles.includes(pluginName)) bundles.push(pluginName);
+      pkg.dsh.profile.bundles = bundles;
+      fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+      return true;
+    } catch (error) {
+      log('[platform-hub] 写入 bundles 失败：', String(error?.message ?? error));
+      return false;
+    }
+  }
+
+  /** 一键安装：后台 spawn `dsh plugin --profile <p> add <repo>`，成功后补写 bundles。 */
+  async function install(id) {
+    const cand = PLATFORM_TABS
+      .flatMap((tab) => (tab.plugins ?? []).map((p) => ({ ...p, tabId: tab.id })))
+      .find((p) => normalizeName(p.id) === normalizeName(String(id)));
+    if (!cand) return { ok: false, error: `没有为「${id}」配置推荐插件` };
+    const profile = detectProfile();
+    if (!profile) {
+      return { ok: false, error: `没识别出当前 profile，请手动执行：dsh plugin --profile <profile> add ${cand.repo}` };
+    }
+    log(`[platform-hub] 安装 ${cand.id} → profile ${profile}`);
+    const out = await new Promise((resolve, reject) => {
+      const child = spawn('dsh', ['plugin', '--profile', profile, 'add', cand.repo], { shell: true, env: process.env });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => { try { child.kill(); } catch {} reject(new Error('安装超时（180s），网络或源太慢，可改为手动安装')); }, INSTALL_TIMEOUT);
+      child.stdout.on('data', (d) => { stdout += String(d); });
+      child.stderr.on('data', (d) => { stderr += String(d); });
+      child.on('error', (e) => { clearTimeout(timer); reject(e); });
+      child.on('exit', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    });
+    if (out.code !== 0) {
+      return { ok: false, error: `安装命令退出码 ${out.code}`, detail: (out.stdout + '\n' + out.stderr).slice(-1500) };
+    }
+    const enabled = enableInProfile(profile, cand.id);
+    return {
+      ok: true,
+      message: `已安装 ${cand.id}${enabled ? ' 并加入启用列表' : ''}；等 DSH 装完依赖后刷新页面即可使用`,
+      profile,
+      detail: out.stdout.slice(-800),
+    };
+  }
+
   return {
-    /** 全量快照：清单 + 安装状态 + 环回探测结果。host 传请求的 Host 头。 */
+    /** 全量快照：清单 + 安装状态 + 环回探测结果 + 平台子页载荷。host 传请求的 Host 头。 */
     async snapshot(host = '') {
       const plugins = scan().map((p) => ({ ...p }));
       for (const p of plugins) {
         if (p.installed && p.statusPath) p.status = await probe(p.statusPath, host);
         else p.status = null;
       }
-      return { plugins, scannedAt: new Date().toISOString() };
+      return { plugins, tabs: tabs(), scannedAt: new Date().toISOString() };
     },
+    install,
   };
 }

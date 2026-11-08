@@ -3973,6 +3973,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
     if (pathname === `${API_PREFIX}/platforms`) { await handlePlatforms(req, res); return; }
     if (pathname === `${API_PREFIX}/platform-hub`) { await handlePlatformHub(req, res); return; }
+    if (pathname === `${API_PREFIX}/platform-hub/install`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      json(res, 200, await platformHub.install(body.id));
+      return;
+    }
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }

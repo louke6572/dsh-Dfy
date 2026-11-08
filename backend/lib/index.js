@@ -4074,6 +4074,24 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
+    if (pathname === `${API_PREFIX}/astrbot/market`) {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      try { json(res, 200, { ok: true, items: await astrbotApi.searchMarket(url.searchParams.get('keyword') ?? '') }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), items: [] }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/old-roles`) {
+      try { json(res, 200, { ok: true, roles: await astrbotApi.listOldRoles() }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), roles: [] }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/old-roles/import`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, await astrbotApi.importOldRole(body.key)); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
     if (pathname === `${API_PREFIX}/astrbot/personas/activate`) {
       if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
       const body = await readJsonBody(req);

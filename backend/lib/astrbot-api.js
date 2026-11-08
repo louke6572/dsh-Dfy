@@ -21,6 +21,41 @@ import { STATE_DIR } from './paths.js';
 const execFileAsync = promisify(execFile);
 const CALL_TIMEOUT = 120_000;
 const CHAT_TIMEOUT = 120_000;
+const MARKET_TTL = 5 * 60_000;
+
+let marketCache = null;
+let marketCacheAt = 0;
+// 老角色卡索引：key → {name, content}（内存映射，避免把文件路径暴露给前端）
+const oldRoleIndex = new Map();
+
+/** 扫老角色卡：characters 各目录的 persona.md + qq/roles 的卡库 md。 */
+function refreshOldRoleIndex() {
+  oldRoleIndex.clear();
+  const charsDir = path.join(STATE_DIR, 'characters');
+  try {
+    for (const entry of fs.readdirSync(charsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const personaFile = path.join(charsDir, entry.name, 'persona.md');
+      const content = (() => { try { return fs.readFileSync(personaFile, 'utf8'); } catch { return ''; } })();
+      if (!content.trim()) continue;
+      let name = entry.name;
+      try {
+        const cur = JSON.parse(fs.readFileSync(path.join(charsDir, entry.name, 'character.json'), 'utf8').replace(/^\uFEFF/, ''));
+        if (cur?.name) name = String(cur.name);
+      } catch {}
+      oldRoleIndex.set(`char:${entry.name}`, { name, content });
+    }
+  } catch {}
+  const rolesDir = path.join(STATE_DIR, 'qq', 'roles');
+  try {
+    for (const entry of fs.readdirSync(rolesDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md') || /^readme/i.test(entry.name)) continue;
+      const content = (() => { try { return fs.readFileSync(path.join(rolesDir, entry.name), 'utf8'); } catch { return ''; } })();
+      if (!content.trim()) continue;
+      oldRoleIndex.set(`role:${entry.name}`, { name: entry.name.replace(/\.md$/, ''), content });
+    }
+  } catch {}
+}
 
 function readAstrbotConfig(cfg) {
   const cwd = cfg.cwd || path.join(os.homedir(), 'astrbot');
@@ -110,6 +145,48 @@ export function createAstrbotApi({ log = () => {} } = {}) {
 
     async uninstallPlugin(name) {
       return callApi(cfg(), 'DELETE', `/plugins/by-id?plugin_id=${encodeURIComponent(String(name))}`);
+    },
+
+    /** 插件市场：全量拉取（5 分钟缓存），按关键词过滤名称/描述/作者，最多 30 条。 */
+    async searchMarket(keyword) {
+      const now = Date.now();
+      if (!marketCache || now - marketCacheAt > MARKET_TTL) {
+        const data = await callApi(cfg(), 'GET', '/plugins/market');
+        const dict = data && typeof data === 'object' ? data : {};
+        marketCache = Object.entries(dict)
+          .filter(([key, item]) => item && typeof item === 'object')
+          .map(([key, item]) => ({
+            key,
+            name: String(item.name ?? key),
+            author: String(item.author ?? ''),
+            desc: String(item.desc ?? ''),
+            repo: String(item.repo ?? `https://github.com/${key}`),
+            version: String(item.version ?? ''),
+          }));
+        marketCacheAt = now;
+      }
+      const kw = String(keyword ?? '').trim().toLowerCase();
+      const rows = !kw ? marketCache : marketCache.filter((p) => `${p.name} ${p.desc} ${p.author}`.toLowerCase().includes(kw));
+      return rows.slice(0, 30);
+    },
+
+    /**
+     * 老角色卡库：characters 目录下各角色的 persona.md，加上 qq/roles 里的卡库 .md。
+     * 返回 [{key, name, chars}]，key 是服务端内存映射的句柄，import 时取回内容。
+     */
+    async listOldRoles() {
+      refreshOldRoleIndex();
+      return [...oldRoleIndex.values()].map(({ key, name, content }) => ({ key, name, chars: content.length }));
+    },
+
+    async importOldRole(key) {
+      refreshOldRoleIndex();
+      const hit = oldRoleIndex.get(String(key));
+      if (!hit) throw new Error('老角色卡不存在（索引过期了？刷新一下重试）');
+      const existing = await this.listPersonas();
+      if (existing.some((p) => p.id === hit.name)) await this.updatePersona(hit.name, hit.content);
+      else await this.createPersona(hit.name, hit.content);
+      return { ok: true, name: hit.name, chars: hit.content.length };
     },
 
     /** 人格列表（= 老版的「角色卡」）：[{id, prompt}]。 */

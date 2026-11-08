@@ -41,6 +41,7 @@ import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
 import { createAstrbotSupervisor } from './astrbot-supervisor.js';
 import { createAstrbotApi } from './astrbot-api.js';
+import { createRawChat, openAiCompletion, openAiStreamChunks } from './dfy-raw-chat.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -248,6 +249,8 @@ export function apply(ctx) {
   astrbotSupervisor.start();
   // AstrBot 面板 API（减法版）：插件列表/启停/安装/卸载，JWT 用它自己配置里的 secret 签。
   const astrbotApi = createAstrbotApi({ log: pluginLog });
+  // 路线 B 路口：把 DSH 会话暴露成 OpenAI 兼容对话端点，AstrBot 的「OpenAI API 兼容」provider 指到这里。
+  const rawChat = createRawChat({ ctx, log: pluginLog });
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
@@ -4008,10 +4011,20 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/astrbot/panel`) {
       try {
         const [plugins, qqConnected] = await Promise.all([astrbotApi.listPlugins(), astrbotApi.isQqConnected()]);
-        json(res, 200, { ok: true, plugins, qqConnected });
+        json(res, 200, { ok: true, plugins, qqConnected, routeB: astrbotApi.getRouteB() });
       } catch (error) {
-        json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [], qqConnected: false });
+        json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [], qqConnected: false, routeB: { on: false, apiBase: '' } });
       }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/route-b`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try {
+        const r = astrbotApi.setRouteB(body.on === true, body.apiBase);
+        if (r.needRestart) await astrbotSupervisor.restart();
+        json(res, 200, { ok: true, message: body.on === true ? '已切到路线 B：对话回 DSH 会话（AstrBot 重启约 30 秒）' : '已切回路线 A：AstrBot 直连模型' });
+      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/chat-test`) {
@@ -4192,6 +4205,33 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 桌宠专用本地接口：独立前缀 + 自己的回环/令牌校验。
   // 不能塞进 /dsh-surfcore/api：那里有 DSH 的 connection.requestRejection（桌宠进程没有会话 Cookie，会 401）。
+  // ── 路线 B 路口：OpenAI 兼容端点（AstrBot 的「OpenAI API 兼容」provider 指到这里）──
+  // AstrBot 组装好人格/记忆后把消息发过来，我们灌进 DSH 会话 dfy-astrbot，鱼的回复以 OpenAI 格式返回。
+  // 对话全程在 DSH 会话里可见（思考过程/模型/上下文都在 DSH 调）；本机回环之外一律拒绝（route() 已带守卫）。
+  route('exact', '/dsh-surfcore/v1/chat/completions', async (req, res) => {
+    if (req.method !== 'POST') { json(res, 405, { error: { message: '只支持 POST' } }); return; }
+    const body = await readJsonBody(req);
+    const text = rawChat.lastUserText(body.messages);
+    if (!text.trim()) { json(res, 400, { error: { message: 'messages 里没有用户消息' } }); return; }
+    const model = String(body.model ?? 'dfy-fish');
+    const id = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    try {
+      const reply = await rawChat.ask(text);
+      if (body.stream === true) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        for (const chunk of openAiStreamChunks(id, model, reply)) res.write(chunk);
+        res.end();
+      } else {
+        json(res, 200, openAiCompletion(id, model, reply));
+      }
+    } catch (error) {
+      json(res, 500, { error: { message: String(error?.message ?? error), type: 'dfy_raw_chat_error' } });
+    }
+  });
+  route('exact', '/dsh-surfcore/v1/models', async (req, res) => {
+    if (req.method !== 'GET') { json(res, 405, { error: { message: '只支持 GET' } }); return; }
+    json(res, 200, { object: 'list', data: [{ id: 'dfy-fish', object: 'model', owned_by: 'dsh-dfy' }] });
+  });
   disposers.push(ctx.webServer.register({
     kind: 'prefix',
     path: petApi.prefix,

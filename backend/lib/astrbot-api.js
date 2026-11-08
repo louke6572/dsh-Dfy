@@ -189,6 +189,46 @@ export function createAstrbotApi({ log = () => {} } = {}) {
       return { ok: true, name: hit.name, chars: hit.content.length };
     },
 
+    /** 当前是否处于路线 B（AstrBot 里存在启用中的 dfy-fish provider）。 */
+    getRouteB() {
+      try {
+        const conf = readAstrbotConfig(cfg());
+        const entry = (Array.isArray(conf.provider) ? conf.provider : []).find((p) => p && p.id === 'dfy-fish');
+        return { on: Boolean(entry && entry.enable !== false), apiBase: String(entry?.api_base ?? '') };
+      } catch {
+        return { on: false, apiBase: '' };
+      }
+    },
+
+    /**
+     * 路线切换：把「OpenAI API 兼容」provider 指到 dsh-Dfy 的 /dsh-surfcore/v1（dfy-fish）。
+     * on=true 写入并启用；on=false 停用（保留条目，随时切回）。改动后调用方需重启 AstrBot。
+     */
+    setRouteB(on, apiBase) {
+      const c = cfg();
+      const file = path.join(c.cwd || path.join(os.homedir(), 'astrbot'), 'data', 'cmd_config.json');
+      const conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+      const list = Array.isArray(conf.provider) ? conf.provider : [];
+      const entry = {
+        id: 'dfy-fish',
+        provider: 'dfy-fish',
+        type: 'openai_chat_completion',
+        provider_type: 'chat_completion',
+        enable: on === true,
+        key: ['dfy-local'],
+        api_base: String(apiBase ?? 'http://127.0.0.1:3080/dsh-surfcore/v1'),
+        timeout: 240,
+        proxy: '',
+        custom_headers: {},
+      };
+      const idx = list.findIndex((p) => p && p.id === 'dfy-fish');
+      if (idx >= 0) list[idx] = { ...list[idx], ...entry };
+      else list.push(entry);
+      conf.provider = list;
+      fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+      return { ok: true, needRestart: true };
+    },
+
     /** 人格列表（= 老版的「角色卡」）：[{id, prompt}]。 */
     async listPersonas() {
       const rows = await callApi(cfg(), 'GET', '/personas');

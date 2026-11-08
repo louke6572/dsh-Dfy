@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const uiDir = path.join(here, "lib", "ui");
@@ -74,15 +75,27 @@ if (unknown.length) {
 }
 const check = process.argv.includes("--check");
 const outPath = path.join(here, "lib", "client.js");
+// 产物语法守卫：拼接不查语法，client.js 一旦有 SyntaxError，桌面端整个插件加载失败
+// （2026-11-08 事故：孤儿括号导致 dsh-dfy: import failed）。构建/校验后都必须过 node --check。
+function assertBundleSyntax() {
+  try {
+    execFileSync(process.execPath, ["--check", outPath], { stdio: "pipe" });
+  } catch (error) {
+    console.error(String(error?.stderr ?? error));
+    console.error(`❌ lib/client.js 语法错误——桌面端会 dsh-dfy: import failed，修复 lib/ui/* 后重构建`);
+    process.exit(1);
+  }
+}
 if (check) {
   const current = fs.readFileSync(outPath, "utf8");
-  if (current === out) {
-    console.log(`✅ lib/client.js 与 lib/ui/* 一致（${files.length + pureModules.length} 个源文件，${out.length} 字符）`);
-  } else {
+  if (current !== out) {
     console.error(`❌ lib/client.js 已过期：改了 lib/ui/* 之后必须跑 node build.mjs 重新构建`);
     process.exit(1);
   }
+  assertBundleSyntax();
+  console.log(`✅ lib/client.js 与 lib/ui/* 一致且语法合法（${files.length + pureModules.length} 个源文件，${out.length} 字符）`);
 } else {
   fs.writeFileSync(outPath, out, "utf8");
+  assertBundleSyntax();
   console.log(`built lib/client.js ← ${files.length + pureModules.length} sources, ${out.length} chars`);
 }

@@ -104,7 +104,7 @@ export function readOneBotHttpTokens(homeDir) {
  *
  * 只增补/修正名为 name 的那一条，不动用户其它网络配置；改之前留一份 .bak-astrbot。
  */
-export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/ws', name = 'astrbot' } = {}) {
+export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/ws', name = 'astrbot', enabled = true } = {}) {
   const result = { ok: false, changed: false, files: [], reason: '' };
   const homes = snowLumaHomeCandidates({ cfg });
   if (!homes.length) { result.reason = 'no-snowluma-home'; return result; }
@@ -128,6 +128,25 @@ export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/w
         role: 'Universal',
         reconnectIntervalMs: 5000
       };
+      const current0 = idx >= 0 ? list[idx] : null;
+      // enabled=false：切「内置版」时把这条出站客户端停用，AstrBot 不再抢 QQ 事件。
+      if (enabled === false) {
+        if (!current0 || current0.enabled === false) { result.files.push({ file: account.file, changed: false }); continue; }
+        list[idx] = { ...current0, enabled: false };
+        doc.networks.wsClients = list;
+        try {
+          const backup0 = `${account.file}.bak-astrbot`;
+          if (!fs.existsSync(backup0)) fs.copyFileSync(account.file, backup0);
+          fs.writeFileSync(account.file, `${JSON.stringify(doc, null, 2)}
+`, 'utf8');
+        } catch (error) {
+          result.files.push({ file: account.file, changed: false, error: String(error?.message ?? error) });
+          continue;
+        }
+        result.changed = true;
+        result.files.push({ file: account.file, changed: true });
+        continue;
+      }
       const current = idx >= 0 ? list[idx] : null;
       const already = current
         && current.enabled === true

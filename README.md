@@ -49,6 +49,10 @@ QQ → SnowLuma（登录层，扫码 / 注入 QQ 进程）→ AstrBot（接入 +
 - DSH 侧每段 QQ 对话一个会话（侧栏 `agents` 工作区可见），可切模型、看思考、看上下文。
 - 首次安装后 dsh-Dfy 会自动完成：识别 / 拉起 SnowLuma、写接入配置、把 `dsh_bridge` 装进 AstrBot、校正 provider 指向。
 - 旧方案（内置 QQ 桥 / AstrBot provider 直连）保留在「维护 → 高级：回退方案」。
+- **QQ 运行方式二选一**（概览 → QQ 运行方式）：
+  - **内置版**：QQ → SnowLuma → dsh-Dfy 内置桥 → DSH，少一跳、回复更快；AstrBot 不接 QQ。
+  - **AstrBot 版**：QQ → SnowLuma → AstrBot（插件层）→ dsh_bridge → DSH，可用 AstrBot 的插件效果（表情包等），回复会多一跳。
+  切换会自动改配置、停/起对应进程并重启 SnowLuma 让连接生效，两边完全独立。
 
 ---
 

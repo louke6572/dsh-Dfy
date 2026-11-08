@@ -1045,6 +1045,84 @@ export function apply(ctx) {
     }));
   }
 
+
+  // ── QQ 运行方式：内置版 / AstrBot 版（完全二选一）──────────────────────
+  // 内置版：dsh-Dfy 自己的 bridge 直连 SnowLuma OneBot（3001），AstrBot 不接 QQ；
+  // AstrBot 版：SnowLuma 通过 wsClients 把事件送进 AstrBot（6199），bridge 停用。
+  // 两边的开关、wsClients、进程都由此切换，避免双大脑抢消息。
+  function readQqRuntimeMode() {
+    try {
+      const mode = String(readUnified().config.qqRuntime ?? '').trim();
+      if (mode === 'builtin' || mode === 'astrbot') return mode;
+    } catch { /* 读不到用默认 */ }
+    return 'astrbot';
+  }
+
+  function execQuiet(command, args, options = {}) {
+    return new Promise((resolve) => {
+      execFile(command, args, { timeout: options.timeout ?? 10_000, windowsHide: true }, (error, stdout, stderr) => {
+        resolve({ error: error ?? null, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+      });
+    });
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function listSnowLumaPids() {
+    // 用端口归属找 SnowLuma（3000/3001 = OneBot HTTP/WS，5099 = 控制台），
+    // 比按命令行匹配稳（Windows 上 Get-CimInstance 可能拿不到 CommandLine）。
+    const { stdout } = await execQuiet('netstat', ['-ano', '-p', 'tcp'], { timeout: 12_000 });
+    const pids = new Set();
+    for (const line of stdout.split(String.fromCharCode(10))) {
+      const cols = line.trim().split(" ").filter((x) => x.length > 0);
+      const local = cols[1] || "";
+      const state = cols[3] || "";
+      const pid = cols[4] || "";
+      const port = local.slice(local.lastIndexOf(":") + 1);
+      if (state === "LISTENING" && ["3000", "3001", "5099", "5199"].includes(port) && /^[0-9]+$/.test(pid)) pids.add(pid);
+    }
+    return [...pids];
+  }
+
+  /** 改完 SnowLuma 的 wsClients 后必须重启它才生效；顺带等 OneBot 端口回来。 */
+  async function restartSnowLuma() {
+    const pids = await listSnowLumaPids();
+    for (const pid of pids) await execQuiet('taskkill', ['/PID', pid, '/F'], { timeout: 8_000 });
+    for (let i = 0; i < 30; i += 1) {
+      if (!(await portOpen(3000)) && !(await portOpen(3001))) break;
+      await sleep(300);
+    }
+    let launched = { ok: false };
+    try { launched = await launchSnowLuma(); } catch (error) { launched = { ok: false, error: String(error?.message ?? error) }; }
+    let online = false;
+    for (let i = 0; i < 40; i += 1) {
+      if (await portOpen(3000)) { online = true; break; }
+      await sleep(500);
+    }
+    return { ok: Boolean(online), pids, launched, online };
+  }
+
+  async function setQqRuntimeMode(mode) {
+    const target = mode === 'builtin' ? 'builtin' : 'astrbot';
+    saveUnified({ qqRuntime: target });
+    if (target === 'builtin') {
+      saveUnified({ modules: { qq: true }, platforms: { start: { qq: true } } });
+      try { ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws', enabled: false }); } catch { /* ignore */ }
+      try { await stopBridge(); } catch { /* ignore */ }
+      let started = { ok: false };
+      try { started = await startBridge({ dshWebUrl: currentDshUrl() }); } catch (error) { started = { ok: false, error: String(error?.message ?? error) }; }
+      const restart = await restartSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+      return { ok: true, mode: target, bridge: started, restart };
+    }
+    saveUnified({ modules: { qq: false }, platforms: { start: { qq: false } } });
+    try { await stopBridge(); } catch { /* ignore */ }
+    try { ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws', enabled: true }); } catch { /* ignore */ }
+    let astrbot = { ok: false };
+    try { astrbot = await astrbotSupervisor.start(); } catch (error) { astrbot = { ok: false, error: String(error?.message ?? error) }; }
+    const restart = await restartSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+    return { ok: true, mode: target, astrbot, restart };
+  }
+
   // ── Agent 工具：让鱼能直接列能力 / 调能力 ───────────────────────────────
   // 能力槽不只是一块设置界面的装饰：这里把同一套槽位暴露成 DSH 工具，
   // 鱼在会话里就能通过「当前主实现」调用 douyin.feed / voice.speak，
@@ -1171,6 +1249,7 @@ export function apply(ctx) {
         qqConnected: await astrbotApi.isQqConnected().catch(() => false),
         bridgePlugin,
         mode: bridgePlugin ? 'plugin' : (rb.on ? 'provider' : 'off'),
+        qqRuntime: readQqRuntimeMode(),
         astrbot: {
           running: supervisor?.running === true,
           port: supervisor?.port ?? null,
@@ -4231,6 +4310,17 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
+    if (pathname === `${API_PREFIX}/qq-runtime`) {
+      if (req.method === 'GET') {
+        json(res, 200, { ok: true, mode: readQqRuntimeMode(), bridge: await bridgeStatus().catch(() => ({})), astrbot: await astrbotSupervisor.status().catch(() => ({})) });
+        return;
+      }
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 GET / POST' }); return; }
+      const runtimeBody = await readJsonBody(req);
+      const result = await setQqRuntimeMode(runtimeBody.mode);
+      json(res, 200, result);
+      return;
+    }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     // 模块闸门：被停用的模块，它的接口前缀一律 410（核心接口不在映射表里，永远放行）。
     const gatedModule = moduleForPath(pathname, API_PREFIX);
@@ -4298,14 +4388,18 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         routeB.bridgePlugin = plugins.some((p) => p && p.name === 'astrbot_plugin_dsh_bridge' && p.enabled === true);
         routeB.mode = routeB.bridgePlugin ? 'plugin' : (routeB.on ? 'provider' : 'off');
         // SnowLuma → AstrBot 的出站客户端以前是手工配置（不写就会「插件装了用不了」）；这里自愈，只增补缺失项。
+        // 内置版（qqRuntime=builtin）时绝对不能补：那会让 AstrBot 重新抢走 QQ 事件。
+        const qqRuntimeNow = readQqRuntimeMode();
         let snowlumaClient = { ok: false, changed: false };
-        try {
-          snowlumaClient = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
-        } catch (error) {
-          snowlumaClient = { ok: false, changed: false, reason: String(error?.message ?? error) };
+        if (qqRuntimeNow === 'astrbot') {
+          try {
+            snowlumaClient = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
+          } catch (error) {
+            snowlumaClient = { ok: false, changed: false, reason: String(error?.message ?? error) };
+          }
         }
         json(res, 200, {
-          ok: true, plugins, qqConnected, routeB,
+          ok: true, plugins, qqConnected, routeB, qqRuntime: qqRuntimeNow,
           snowlumaClient: { ...snowlumaClient, needRestart: snowlumaClient.changed === true && qqConnected !== true },
         });
       } catch (error) {
@@ -4677,6 +4771,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (bridgeHealthBusy) return;
     bridgeHealthBusy = true;
     try {
+      if (readQqRuntimeMode() === 'builtin') {
+        // 内置版：AstrBot 不参与 QQ，只看管内置桥有没有挂着
+        try {
+          const builtinStatus = await bridgeStatus();
+          if (!builtinStatus.running) await startBridge({ dshWebUrl: currentDshUrl() });
+        } catch (error) {
+          pluginLog('[qq-builtin] 内置桥自愈失败：', String(error?.message ?? error));
+        }
+        return;
+      }
       let plugins = null;
       try { plugins = await astrbotApi.listPlugins(); } catch { plugins = null; }
       let astrbotStatus = null;

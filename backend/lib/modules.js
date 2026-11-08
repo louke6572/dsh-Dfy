@@ -12,6 +12,7 @@
 // navPage = 设置页左侧导航里的页 id（lib/ui/02-shell.js）。
 export const MODULES = [
   { id: 'bili', title: '养鱼（B站）', navPage: 'bili', description: 'B站观看、口味偏好、动态分享与观看历史。' },
+  { id: 'tieba', title: '贴吧', navPage: 'tieba', description: '贴吧逛吧、发帖 / 评论 / 点赞 / 签到（BDUSS 登录）。' },
   { id: 'douyin', title: '抖音', navPage: 'douyin', description: '抖音网页版观看、私信与推荐流。', capabilities: ['douyin.feed'] },
   { id: 'qq', title: 'QQ', navPage: 'qq', description: 'QQ 桥接、群策略与防封号闸门。' },
   { id: 'characters', title: '角色与记忆卡', navPage: 'characters', description: '角色卡、人设与人设状态。' },
@@ -29,6 +30,7 @@ export const CAPABILITY_MODULE = {
 // 路由前缀 → 模块。按顺序匹配，第一条命中生效；没列出的前缀视为核心接口，不受模块开关影响。
 const ROUTE_RULES = [
   ['/douyin', 'douyin'],
+  ['/tieba', 'tieba'],
   ['/bili/', 'bili'],
   ['/watch-history', 'bili'],
   ['/preferences/scan', 'bili'],

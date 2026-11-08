@@ -37,6 +37,12 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
+import {
+  clearTiebaCredentials, markTiebaVerified, readTiebaCredentials, readTiebaViewHistory,
+  resolveTiebaAuth, saveTiebaCookieLogin, tiebaAction, tiebaConfig, tiebaStatus,
+  verifyStoredTiebaCredentials,
+} from './tieba.js';
+import { cancelTiebaQrLogin, pollTiebaQrLogin, startTiebaQrLogin } from './tieba-qr-login.mjs';
 import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
@@ -305,6 +311,7 @@ export function apply(ctx) {
   }
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
+  platforms.setStatus('tieba', () => tiebaStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
   configureDouyinLog((message) => pluginLog(message));
   let llmService = null;
@@ -4137,6 +4144,129 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { ok: true, ...(await platformHub.snapshot(req.headers.host)), astrbot: await astrbotSupervisor.status() });
   }
 
+  async function handleTieba(req, res, url) {
+    const pathname = url.pathname;
+    // 保存 BDUSS 并当场验证（curl 网络层，百度不认 Node fetch 的 TLS 指纹）
+    if (pathname.endsWith('/login')) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = await readJsonBody(req); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+      try {
+        pluginLog('[贴吧登录] 保存 BDUSS');
+        const result = await saveTiebaCookieLogin(String(body.cookie ?? body.bduss ?? ''));
+        try { markTiebaVerified(); } catch {}
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        pluginLog(`[贴吧登录] 失败：${String(error?.message ?? error)}`);
+        json(res, 400, { ok: false, code: String(error?.code ?? ''), error: String(error?.message ?? error) });
+      }
+      return;
+    }
+    // 手机扫码登录：换到 BDUSS 后由后端用 curl 验证并落盘，用户不用复制任何东西
+    if (pathname.endsWith('/qr/start')) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      try {
+        pluginLog('[贴吧登录] 生成二维码');
+        json(res, 200, { ok: true, ...(await startTiebaQrLogin()) });
+      } catch (error) {
+        pluginLog(`[贴吧登录] 二维码失败：${String(error?.message ?? error)}`);
+        json(res, 503, { ok: false, error: String(error?.message ?? error) });
+      }
+      return;
+    }
+    if (pathname.endsWith('/qr/poll')) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
+      const id = String(url.searchParams.get('id') ?? '').trim();
+      if (!/^tieba_qr_[0-9a-f-]{36}$/i.test(id)) { json(res, 400, { ok: false, error: 'id 不合法' }); return; }
+      const result = await pollTiebaQrLogin(id);
+      if (result?.status === 'failed') pluginLog(`[贴吧登录] 扫码失败：${String(result.error ?? '').slice(0, 300)}`);
+      if (result?.status === 'confirmed') { try { markTiebaVerified(); } catch {} }
+      json(res, 200, result);
+      return;
+    }
+    if (pathname.endsWith('/qr/cancel')) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = await readJsonBody(req); } catch {}
+      cancelTiebaQrLogin(String(body.id ?? '').trim());
+      json(res, 200, { ok: true });
+      return;
+    }
+    // 浏览器自动化入口已废弃（Chrome 136 读不到加密 cookie，且要关浏览器）
+    if (pathname.endsWith('/open-token')) {
+      json(res, 410, {
+        ok: false, code: 'tieba.legacy-login-removed',
+        error: '领取 token 页已移除，请用扫码登录',
+        hint: '点「扫码登录」，手机确认后自动完成',
+      });
+      return;
+    }
+    // 旧的浏览器登录入口（已废弃）
+    if (pathname.includes('/login/start') || pathname.includes('/login/poll') || pathname.includes('/login/cancel')) {
+      json(res, 410, {
+        ok: false, code: 'tieba.legacy-login-removed',
+        error: '浏览器自动登录已移除，改为粘贴 BDUSS',
+        hint: '把 BDUSS 粘贴到输入框，点「保存并测试」',
+      });
+      return;
+    }
+    if (pathname.endsWith('/credentials/clear')) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      clearTiebaCredentials();
+      json(res, 200, { ok: true });
+      return;
+    }
+    if (pathname.endsWith('/account/verify')) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      try { json(res, 200, await verifyStoredTiebaCredentials()); }
+      catch (error) { json(res, 500, { ok: false, error: `核查失败：${String(error?.message ?? error).slice(0, 160)}` }); }
+      return;
+    }
+    // 看过的帖子（设置页「观看记录」）
+    if (req.method === 'GET' && pathname.endsWith('/history')) {
+      try {
+        json(res, 200, {
+          ok: true,
+          ...readTiebaViewHistory({
+            limit: Number(url.searchParams.get('limit')) || 200,
+            q: url.searchParams.get('q') ?? '',
+            days: Number(url.searchParams.get('days')) || 0,
+          }),
+        });
+      } catch (error) {
+        json(res, 500, { ok: false, error: String(error?.message ?? error) });
+      }
+      return;
+    }
+    // 默认 GET → 状态
+    if (req.method === 'GET') { json(res, 200, tiebaStatus()); return; }
+    // POST → action 分发（heartbeat-now / verify / feed / ...）
+    let body = {};
+    try { body = await readJsonBody(req); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+    const action = String(body.action ?? '');
+    if (action === 'heartbeat-now') {
+      if (!scheduler || !schedulerStatus.running) {
+        json(res, 400, { ok: false, error: 'B站生物钟没在运行：贴吧跟它共用作息，先启动 B站 平台' });
+        return;
+      }
+      try {
+        const result = await scheduler.wakeTieba?.('手动');
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        json(res, 500, { ok: false, error: String(error?.message ?? error) });
+      }
+      return;
+    }
+    const allowed = ['verify', 'feed', 'thread', 'floor', 'replyme', 'post', 'reply', 'like', 'unlike', 'sign', 'delete-thread', 'delete-post', 'rename', 'summary', 'status'];
+    if (!allowed.includes(action)) { json(res, 400, { ok: false, error: `未知贴吧动作：${action || '（空）'}` }); return; }
+    try {
+      const result = await tiebaAction(action, body);
+      json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      json(res, 400, { ok: false, error: String(error?.message ?? error), code: String(error?.code ?? '') });
+    }
+  }
+
   // ── 全局模型（对话页）：一份选择，插件后台任务与新建会话共用 ───────────
   async function modelCatalog() {
     const saved = readUnified().config.model ?? { provider: '', model: '' };
@@ -4565,6 +4695,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/douyin`)) { await handleDouyin(req, res, url); return; }
+    if (pathname.startsWith(`${API_PREFIX}/tieba`)) { await handleTieba(req, res, url); return; }
     if (pathname === `${API_PREFIX}/compat/scan`) {
       try {
         let version = '';

@@ -1,0 +1,44 @@
+{
+  "comment": "dsh-Dfy 平台插件推荐清单。dsh-Dfy 只做壳：平台能力优先装这些现成的 DSH 社区插件，装卸一律走 DSH 插件页（或 dsh-market）。发现与状态聚合见 backend/lib/platform-hub.js。",
+  "updatedAt": "2026-11-08",
+  "indexSources": [
+    {
+      "name": "awesome-dsh-plugin 官方目录（9000+ 插件，23 分类）",
+      "url": "https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json",
+      "how": "DSH 插件页 → 发现 → 索引源，添加上面地址后即可搜索安装"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "dsh-tieba-dive",
+      "repo": "github:Nekomeow114/dsh-tieba-dive",
+      "covers": "贴吧整套：读帖/日报/签到/可选回帖，自带人设与风格库",
+      "status": "已在用：dsh-Dfy 平台页有薄壳入口，概览自动显示"
+    },
+    {
+      "id": "dsh-dot",
+      "repo": "github:Kevinwu901113/dsh-dot",
+      "covers": "聚合养鱼套件：QQ（NapCat/SnowLuma）+ 安卓模拟器刷 B站/微博/小红书 + 人设/记忆/日记/作息/主动联系闸门",
+      "requires": "WHPX 硬件虚拟化 + 安卓模拟器（约 2GB）；启用它的 QQ 时请先用模块中心停用 dsh-Dfy 内置 QQ 桥，避免双桥双响应",
+      "status": "试点中：作为内置 QQ/B站 的替代方案观察"
+    },
+    {
+      "id": "dsh-im",
+      "repo": "github:xmanrui/dsh-im",
+      "covers": "IM 通道：QQ/微信/企业微信/飞书/钉钉/QQ/Slack/Telegram/Discord 九通道",
+      "note": "dsh-dot 的配套；单独装也能给 DSH 接 IM"
+    },
+    {
+      "id": "dsh-douyin-watch",
+      "repo": "github:miqian-nomad/dsh-douyin-watch",
+      "covers": "抖音私信/评论自动化：新私信叫醒 agent、回私信、发评论、回楼中楼、读通知，带频率上限与去重",
+      "status": "已安装：与 dsh-Dfy 内置抖音模块二选一，避免双响应"
+    },
+    {
+      "id": "dsh-chatting-pet",
+      "repo": "github:flhy666/dsh-chatting-pet",
+      "covers": "桌宠+语音聊天+人设+记忆+B站热榜（想换桌宠形态时可试）",
+      "status": "可选：与小鲸鱼桌宠重叠，二选一"
+    }
+  ]
+}

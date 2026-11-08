@@ -38,6 +38,7 @@ import {
 } from './characters.js';
 import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
+import { createPlatformHub } from './platform-hub.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -238,6 +239,8 @@ export function apply(ctx) {
   // 相关事故与处置见 docs/PITFALLS.md #1/#3。
 
   const platforms = new PlatformRegistry();
+  // 平台插件发现：装进 DSH 的独立平台插件（tieba-dive / dsh-dot 这类），装了就显示、卸了就消失。
+  const platformHub = createPlatformHub({ selfName: 'dsh-dfy', log: pluginLog });
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
@@ -3749,6 +3752,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { ok: true, platforms: await platforms.statusAll(), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
   }
 
+  // 外部平台插件：两层发现 + 同源环回探测运行态（Host 来自请求头，只探本机）。
+  async function handlePlatformHub(req, res) {
+    json(res, 200, { ok: true, ...(await platformHub.snapshot(req.headers.host)) });
+  }
+
   // ── 全局模型（对话页）：一份选择，插件后台任务与新建会话共用 ───────────
   async function modelCatalog() {
     const saved = readUnified().config.model ?? { provider: '', model: '' };
@@ -3964,6 +3972,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/align`) { await handleAlign(req, res); return; }
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
     if (pathname === `${API_PREFIX}/platforms`) { await handlePlatforms(req, res); return; }
+    if (pathname === `${API_PREFIX}/platform-hub`) { await handlePlatformHub(req, res); return; }
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }

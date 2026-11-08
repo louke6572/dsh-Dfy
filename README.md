@@ -176,6 +176,27 @@ node scripts/uninstall.mjs --yes --purge-state   # 连配置、记忆、日志�
 
 ---
 
+## 插件生态：平台能力装现成的
+
+dsh-Dfy 的定位是**壳**（桌宠 + 挂件 + 概览聚合）：贴吧、QQ、B站、抖音这些平台能力，
+优先装现成的 DSH 社区插件——**装了就出现在概览「平台插件」里，卸了就消失**，
+安装与卸载一律走 DSH 插件页，dsh-Dfy 不内置平台安装器。
+
+- **发现机制**：概览页自动列出所有已装的 DSH 插件；遵循清单约定的插件
+  （往 `$DSH_HOME/shared/plugins/` 写 `provides: ["dfy.platform"]` 清单，
+  见 `backend/platforms/README.md`）还会带运行态探测。
+- **推荐清单**：见 [`market/recommendations.json`](market/recommendations.json)——
+  贴吧用 [dsh-tieba-dive](https://github.com/Nekomeow114/dsh-tieba-dive)（已集成薄壳）、
+  QQ/B站养鱼套件试点 [dsh-dot](https://github.com/Kevinwu901113/dsh-dot)、
+  IM 通道 [dsh-im](https://github.com/xmanrui/dsh-im)、
+  抖音自动化 [dsh-douyin-watch](https://github.com/miqian-nomad/dsh-douyin-watch)。
+- **搜索全目录**：DSH 插件页 → 发现 → 索引源，添加
+  `https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json`（9000+ 插件）。
+- **注意**：同一平台二选一——启用社区插件的 QQ/抖音时，先用 dsh-Dfy
+  「模块中心」停用内置对应模块，避免双桥双响应。
+
+---
+
 ## 日常使用
 
 - **打开菜单**：点小鲸鱼；按钮被隐藏时，电脑端右键角色、手机端长按 1.5 秒。

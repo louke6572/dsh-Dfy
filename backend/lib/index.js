@@ -4043,10 +4043,21 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/personas`) {
+      let migrated = null;
+      // 首次进入人格页：自动把老角色卡（+记忆卡压缩版）迁成 AstrBot 人格并设为当前
+      try {
+        const mig = await astrbotApi.migrateOldCharacterPersona();
+        if (mig?.ok) migrated = mig;
+      } catch (error) { pluginLog('[astrbot] 老角色迁移失败：', String(error?.message ?? error)); }
       try {
         const personas = await astrbotApi.listPersonas();
-        json(res, 200, { ok: true, personas, active: astrbotApi.getActivePersonaId() });
-      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), personas: [], active: '' }); }
+        json(res, 200, { ok: true, personas, active: astrbotApi.getActivePersonaId(), migrated });
+        // 迁移过才需要重启让「设为当前」生效
+        if (migrated) await astrbotSupervisor.restart();
+      } catch (error) {
+        json(res, 200, { ok: false, error: String(error?.message ?? error), personas: [], active: '', migrated });
+        if (migrated) await astrbotSupervisor.restart();
+      }
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/personas/save`) {

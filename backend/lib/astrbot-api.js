@@ -16,6 +16,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readUnified } from './store.js';
+import { STATE_DIR } from './paths.js';
 
 const execFileAsync = promisify(execFile);
 const CALL_TIMEOUT = 120_000;
@@ -146,14 +147,42 @@ export function createAstrbotApi({ log = () => {} } = {}) {
 
     /** 切换当前人格：写配置文件，需要重启 AstrBot 生效（返回 needRestart）。 */
     setActivePersonaId(id) {
+      return setActivePersonaIdImpl(cfg(), id);
+    },
+
+    /**
+     * 一次性迁移：把老架构的角色卡（persona.md）+ 记忆卡压缩版（memory-card-prompt-qq.md）
+     * 合成一个 AstrBot 人格（以角色名命名），并设为当前。做过的用标记文件防重复。
+     * 只创建人格和写配置（人格内容即时生效）；「设为当前」由调用方触发重启。
+     */
+    async migrateOldCharacterPersona() {
       const c = cfg();
-      const file = path.join(c.cwd || path.join(os.homedir(), 'astrbot'), 'data', 'cmd_config.json');
-      const conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-      conf.agent_runner = conf.agent_runner ?? {};
-      conf.agent_runner.config = conf.agent_runner.config ?? {};
-      conf.agent_runner.config.persona = { ...(conf.agent_runner.config.persona ?? {}), persona_id: String(id) };
-      fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
-      return { ok: true, needRestart: true };
+      const cwd = c.cwd || path.join(os.homedir(), 'astrbot');
+      const marker = path.join(cwd, 'data', '.dfy-persona-migrated');
+      if (fs.existsSync(marker)) return { ok: false, reason: 'already' };
+      try { fs.mkdirSync(path.dirname(marker), { recursive: true }); fs.writeFileSync(marker, new Date().toISOString()); } catch {}
+      // 读老角色：characters/current.json → {name, dir}
+      let character = null;
+      try {
+        character = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'characters', 'current.json'), 'utf8').replace(/^\uFEFF/, ''));
+      } catch { return { ok: false, reason: 'no-old-character' }; }
+      const dir = String(character?.dir ?? '');
+      const name = String(character?.name ?? '').trim();
+      if (!dir || !name) return { ok: false, reason: 'no-old-character' };
+      const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
+      const base = read(path.join(dir, 'persona.md')).trim();
+      if (!base) return { ok: false, reason: 'no-persona-file' };
+      const memory = read(path.join(dir, 'memory', 'memory-card-prompt-qq.md')).trim();
+      const prompt = memory
+        ? `${base}\n\n# 与主人的共同记忆（长期记忆卡的压缩版，会过期，后续由记忆插件接管）\n\n${memory}`
+        : base;
+      // 已有同名人格就更新，避免重复创建
+      const existing = await this.listPersonas();
+      if (existing.some((p) => p.id === name)) await this.updatePersona(name, prompt);
+      else await this.createPersona(name, prompt);
+      setActivePersonaIdImpl(c, name);
+      log(`[astrbot] 老角色卡已迁移：${name}（${prompt.length} 字符）`);
+      return { ok: true, name, chars: prompt.length };
     },
 
     /**
@@ -224,5 +253,16 @@ async function chatTestImpl(cfg, text, state, log) {
   reply = reply.trim();
   if (!reply) throw new Error('大脑没回话——多半是模型 key 还没配（机器人配置里保存一次就好）');
   return { reply };
+}
+
+/** 当前人格落盘：agent_runner.config.persona.persona_id（重启后生效）。 */
+function setActivePersonaIdImpl(cfg, id) {
+  const file = path.join(cfg.cwd || path.join(os.homedir(), 'astrbot'), 'data', 'cmd_config.json');
+  const conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+  conf.agent_runner = conf.agent_runner ?? {};
+  conf.agent_runner.config = conf.agent_runner.config ?? {};
+  conf.agent_runner.config.persona = { ...(conf.agent_runner.config.persona ?? {}), persona_id: String(id) };
+  fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+  return { ok: true, needRestart: true };
 }
 

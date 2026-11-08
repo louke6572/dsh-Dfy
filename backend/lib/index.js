@@ -4031,6 +4031,44 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
+    if (pathname === `${API_PREFIX}/astrbot/personas`) {
+      try {
+        const personas = await astrbotApi.listPersonas();
+        json(res, 200, { ok: true, personas, active: astrbotApi.getActivePersonaId() });
+      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), personas: [], active: '' }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/personas/save`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      const id = String(body.id ?? '').trim();
+      const prompt = String(body.prompt ?? '');
+      if (!id) { json(res, 200, { ok: false, error: '人格 id 不能为空' }); return; }
+      try {
+        const existing = await astrbotApi.listPersonas();
+        if (existing.some((p) => p.id === id)) await astrbotApi.updatePersona(id, prompt);
+        else await astrbotApi.createPersona(id, prompt);
+        json(res, 200, { ok: true, live: true });
+      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/personas/activate`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try {
+        const r = astrbotApi.setActivePersonaId(body.id);
+        if (r.needRestart) await astrbotSupervisor.restart();
+        json(res, 200, { ok: true, message: '已切换当前人格并重启 AstrBot（约 30 秒生效）' });
+      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/personas/delete`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, { ok: true, ...(await astrbotApi.deletePersona(body.id)) }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }

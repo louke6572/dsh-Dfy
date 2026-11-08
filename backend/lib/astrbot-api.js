@@ -105,5 +105,50 @@ export function createAstrbotApi({ log = () => {} } = {}) {
     async uninstallPlugin(name) {
       return callApi(cfg(), 'DELETE', `/plugins/by-id?plugin_id=${encodeURIComponent(String(name))}`);
     },
+
+    /** 人格列表（= 老版的「角色卡」）：[{id, prompt}]。 */
+    async listPersonas() {
+      const rows = await callApi(cfg(), 'GET', '/personas');
+      const list = Array.isArray(rows) ? rows : [];
+      return list.map((p) => ({
+        id: String(p.persona_id ?? ''),
+        prompt: String(p.system_prompt ?? ''),
+      }));
+    },
+
+    async createPersona(id, prompt) {
+      return callApi(cfg(), 'POST', '/personas', { persona_id: String(id), system_prompt: String(prompt ?? '') });
+    },
+
+    async updatePersona(id, prompt) {
+      return callApi(cfg(), 'PUT', '/personas/by-id', { persona_id: String(id), system_prompt: String(prompt ?? '') });
+    },
+
+    async deletePersona(id) {
+      return callApi(cfg(), 'DELETE', `/personas/by-id?persona_id=${encodeURIComponent(String(id))}`);
+    },
+
+    /** 当前使用的人格 id（读它自己的 cmd_config.json，agent_runner.config.persona.persona_id）。 */
+    getActivePersonaId(cfgOverride) {
+      try {
+        const conf = readAstrbotConfig(cfgOverride ?? cfg());
+        const id = conf?.agent_runner?.config?.persona?.persona_id;
+        return String(id ?? '');
+      } catch {
+        return '';
+      }
+    },
+
+    /** 切换当前人格：写配置文件，需要重启 AstrBot 生效（返回 needRestart）。 */
+    setActivePersonaId(id) {
+      const c = cfg();
+      const file = path.join(c.cwd || path.join(os.homedir(), 'astrbot'), 'data', 'cmd_config.json');
+      const conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+      conf.agent_runner = conf.agent_runner ?? {};
+      conf.agent_runner.config = conf.agent_runner.config ?? {};
+      conf.agent_runner.config.persona = { ...(conf.agent_runner.config.persona ?? {}), persona_id: String(id) };
+      fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+      return { ok: true, needRestart: true };
+    },
   };
 }

@@ -40,6 +40,7 @@ import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCur
 import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
 import { createAstrbotSupervisor } from './astrbot-supervisor.js';
+import { createAstrbotApi } from './astrbot-api.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -245,6 +246,8 @@ export function apply(ctx) {
   // AstrBot 网关守护：打开 DSH 自动拉起，不用手动启动。
   const astrbotSupervisor = createAstrbotSupervisor({ log: pluginLog });
   astrbotSupervisor.start();
+  // AstrBot 面板 API（减法版）：插件列表/启停/安装/卸载，JWT 用它自己配置里的 secret 签。
+  const astrbotApi = createAstrbotApi({ log: pluginLog });
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
@@ -3997,6 +4000,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       if (body.action === 'start') { json(res, 200, await astrbotSupervisor.ensureRunning({ manual: true })); return; }
       if (body.action === 'restart') { json(res, 200, await astrbotSupervisor.restart()); return; }
       json(res, 400, { ok: false, error: 'action 只支持 start / restart' });
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/panel`) {
+      try { json(res, 200, { ok: true, plugins: await astrbotApi.listPlugins() }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [] }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/plugins/install`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, { ok: true, ...(await astrbotApi.installPlugin(body.url)) }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/plugins/enabled`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, { ok: true, ...(await astrbotApi.setPluginEnabled(body.name, body.enabled === true)) }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/plugins/uninstall`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, { ok: true, ...(await astrbotApi.uninstallPlugin(body.name)) }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }

@@ -1109,6 +1109,7 @@ export function apply(ctx) {
       saveUnified({ modules: { qq: true }, platforms: { start: { qq: true } } });
       try { ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws', enabled: false }); } catch { /* ignore */ }
       try { await stopBridge(); } catch { /* ignore */ }
+      try { astrbotSupervisor.stop(); } catch { /* 不是 dsh-Dfy 拉起的会拒绝，忽略 */ }
       let started = { ok: false };
       try { started = await startBridge({ dshWebUrl: currentDshUrl() }); } catch (error) { started = { ok: false, error: String(error?.message ?? error) }; }
       const restart = await restartSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
@@ -1278,6 +1279,8 @@ export function apply(ctx) {
       platformStart: platformStartState(),
       // 路线 B 状态：接管中时顶部/概览要换成「QQ 由 AstrBot 管」，内置桥未运行是正常态。
       routeB,
+      // QQ 运行方式（内置版 / AstrBot 版）：导航与设置页按它切换整套 UI。
+      qqRuntime: readQqRuntimeMode(),
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,

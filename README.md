@@ -52,7 +52,9 @@ QQ → SnowLuma（登录层，扫码 / 注入 QQ 进程）→ AstrBot（接入 +
 - **QQ 运行方式二选一**（概览 → QQ 运行方式）：
   - **内置版**：QQ → SnowLuma → dsh-Dfy 内置桥 → DSH，少一跳、回复更快；AstrBot 不接 QQ。
   - **AstrBot 版**：QQ → SnowLuma → AstrBot（插件层）→ dsh_bridge → DSH，可用 AstrBot 的插件效果（表情包等），回复会多一跳。
-  切换会自动改配置、停/起对应进程并重启 SnowLuma 让连接生效，两边完全独立。
+  切换会自动改配置、停/起对应进程并重启 SnowLuma 让连接生效；**设置页导航也会整套切换**：
+  内置版用 0.7.4/0.7.5 的原版界面（平台/角色/对话/系统，含 QQ 旧桥页），AstrBot 版用新的「我的鱼」界面，
+  两边互不出现对方专属页面。
 
 ---
 

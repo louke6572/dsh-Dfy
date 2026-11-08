@@ -39,6 +39,7 @@ import {
 import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
+import { createAstrbotSupervisor } from './astrbot-supervisor.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -241,6 +242,9 @@ export function apply(ctx) {
   const platforms = new PlatformRegistry();
   // 平台插件发现：装进 DSH 的独立平台插件（tieba-dive / dsh-dot 这类），装了就显示、卸了就消失。
   const platformHub = createPlatformHub({ selfName: 'dsh-dfy', log: pluginLog });
+  // AstrBot 网关守护：打开 DSH 自动拉起，不用手动启动。
+  const astrbotSupervisor = createAstrbotSupervisor({ log: pluginLog });
+  astrbotSupervisor.start();
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
@@ -3754,7 +3758,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 外部平台插件：两层发现 + 同源环回探测运行态（Host 来自请求头，只探本机）。
   async function handlePlatformHub(req, res) {
-    json(res, 200, { ok: true, ...(await platformHub.snapshot(req.headers.host)) });
+    json(res, 200, { ok: true, ...(await platformHub.snapshot(req.headers.host)), astrbot: await astrbotSupervisor.status() });
   }
 
   // ── 全局模型（对话页）：一份选择，插件后台任务与新建会话共用 ───────────
@@ -3979,6 +3983,22 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, 200, await platformHub.install(body.id));
       return;
     }
+    if (pathname === `${API_PREFIX}/astrbot/config`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      const r = await astrbotSupervisor.saveProviderKey(body.apiKey);
+      if (r.ok && r.needRestart) await astrbotSupervisor.restart();
+      json(res, 200, r);
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/action`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      if (body.action === 'start') { json(res, 200, await astrbotSupervisor.ensureRunning({ manual: true })); return; }
+      if (body.action === 'restart') { json(res, 200, await astrbotSupervisor.restart()); return; }
+      json(res, 400, { ok: false, error: 'action 只支持 start / restart' });
+      return;
+    }
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }
@@ -4132,6 +4152,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   ctx.effect(() => () => {
     try { scheduler?.stop?.(); } catch {}
     try { void disposeDouyin(); } catch {}
+    try { astrbotSupervisor.stop(); } catch {}
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);

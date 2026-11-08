@@ -87,6 +87,14 @@ export const DEFAULT_UNIFIED = {
     displayName: '',
     gentle: true,
   },
+  // AstrBot 网关：dsh-Dfy 负责把它拉起来（打开 DSH 即自动就绪），配置一次后不再管。
+  // cwd/exe 留空 = 按默认位置自动发现（~/astrbot 数据目录、~/.local/bin/astrbot.exe）。
+  astrbot: {
+    enabled: true,
+    cwd: '',
+    exe: '',
+    port: 6185,
+  },
   memory: {
     qqToBili: {
       enabled: false,
@@ -675,6 +683,14 @@ function normalizeUnified(config) {
     const n = Number(value);
     if (!Number.isFinite(n)) return fallback;
     return Math.max(min, Math.min(max, n));
+  };
+  // AstrBot：enabled 默认 true（打开 DSH 就该有它）；端口收敛到合法范围；路径只收字符串。
+  const astrbot = isPlainObject(next.astrbot) ? next.astrbot : {};
+  next.astrbot = {
+    enabled: boolOr(astrbot.enabled, true),
+    cwd: String(astrbot.cwd ?? '').trim(),
+    exe: String(astrbot.exe ?? '').trim(),
+    port: clamp(astrbot.port, 1024, 65535, 6185),
   };
   const tiebaPrefs = isPlainObject(tieba.preferences) ? tieba.preferences : {};
   const like = normalizeKeywordList(tiebaPrefs.like);

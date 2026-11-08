@@ -1,11 +1,11 @@
 # dsh-Dfy
 
-> DeepSeek Harness（DSH）的桌宠与挂件套件 · `v0.7.5`
+> DeepSeek Harness（DSH）的桌宠与挂件套件 · `v0.8.0`
 
 小鲸鱼余额挂件 + 桌宠（106 段透明动画）+ QQ 消息卡，QQ / B站 / 双向脱敏记忆由包内自带的 SurfCore 提供。
 
 > English: an all-in-one **DeepSeek Harness (DSH) plugin** — balance whale widget, transparent desktop pet,
-> QQ message card bridged through SnowLuma, Bilibili dynamics/comments, and local redacted memory.
+> QQ chat through AstrBot (plugins) with every conversation mirrored into its own DSH session, Bilibili dynamics/comments, and local redacted memory.
 > One plugin for the DSH web GUI; data stays on this machine.
 
 > **在 DSH「添加插件」里怎么填**：粘贴 `github:louke6572/dsh-Dfy`（或完整地址
@@ -31,10 +31,24 @@
 | 小鲸鱼 | 5 套表情（133 张）、情绪 / 眨眼 / 卖萌、泡泡编辑器、音效 |
 | 桌宠 | 106 段动画、13 个动作分类；Q 弹、弹簧拖拽、甩抛、屏幕漫游、分身、双击弹弓 |
 | 双形态 | 小鲸鱼与桌宠可同时显示（共存），各自独立位置与大小 |
-| QQ | 信封角标 + 消息 / 记录 / 写消息三视图；桥接走 SnowLuma，支持群与私聊 |
+| QQ | SnowLuma 登录层 + AstrBot 插件层；每段对话在 DSH 里独立成会话（可切模型 / 看思考 / 看上下文）；信封角标 + 消息 / 记录 / 写消息三视图 |
 | B站 | 扫码登录、动态 / 评论互动、鱼群保护、昼夜作息 |
-| 贴吧 | 手机扫码登录（自动换取并验证 BDUSS）：逛吧、发帖 / 评论 / 点赞、签到，跟 B站 共用作息 |
+| AstrBot | QQ 接入与插件生态（认主 / 表情包 / 拟人…）；`dsh_bridge` 插件随包自动安装，按 QQ 会话把消息转给 DSH |
 | 记忆 | 人格卡、双向脱敏记忆、身份对齐；数据只存本机 |
+
+---
+
+### QQ 接入架构（2026-11 起）
+
+```
+QQ → SnowLuma（登录层，扫码 / 注入 QQ 进程）→ AstrBot（接入 + 插件层）
+   → dsh_bridge 插件 → DSH（每段对话一个会话）→ 回复回 QQ
+```
+
+- SnowLuma 只负责 QQ 登录；AstrBot 负责消息接入和插件；DSH 负责「想和说」。
+- DSH 侧每段 QQ 对话一个会话（侧栏 `agents` 工作区可见），可切模型、看思考、看上下文。
+- 首次安装后 dsh-Dfy 会自动完成：识别 / 拉起 SnowLuma、写接入配置、把 `dsh_bridge` 装进 AstrBot、校正 provider 指向。
+- 旧方案（内置 QQ 桥 / AstrBot provider 直连）保留在「维护 → 高级：回退方案」。
 
 ---
 
@@ -169,31 +183,20 @@ node scripts/uninstall.mjs --yes --purge-state   # 连配置、记忆、日志�
 ## 第一次使用
 
 1. **余额**：配 `DEEPSEEK_API_KEY`，或在 DSH「设置 → 账号与余额」登录；鲸鱼旁出现数字即成功。
-2. **QQ（可选）**：设置页「一键开始」+ 扫码后，桥接显示「运行中」，角色旁出现信封角标；
-   点信封 → 「写消息」发一条试试。
+2. **QQ（可选）**：装好 SnowLuma 并扫码登录后，打开 DSH 会自动拉起 AstrBot 并装好 `dsh_bridge` 插件；在 QQ 私聊发一句即可，回复会进 DSH 侧栏 `agents` 工作区的独立会话。设置页「维护」可看 SnowLuma / AstrBot 状态与体检。
 3. **B站（可选）**：控制台 → B站 → 扫码；设互动频率与鱼群保护。不接就不会请求 B站接口。
 4. **记忆（可选）**：控制台 → 记忆卡，导入或新建人格卡；模板在 `roles/`、`examples/`。
 
 ---
 
-## 插件生态：平台能力装现成的
+## 插件生态：AstrBot 当 QQ 插件层
 
-dsh-Dfy 的定位是**壳**（桌宠 + 挂件 + 概览聚合）：贴吧、QQ、B站、抖音这些平台能力，
-优先装现成的 DSH 社区插件——**装了就出现在概览「平台插件」里，卸了就消失**，
-安装与卸载一律走 DSH 插件页，dsh-Dfy 不内置平台安装器。
+QQ 消息先经过 AstrBot、再交给 DSH，所以 AstrBot 的插件照常生效：
 
-- **发现机制**：概览页自动列出所有已装的 DSH 插件；遵循清单约定的插件
-  （往 `$DSH_HOME/shared/plugins/` 写 `provides: ["dfy.platform"]` 清单，
-  见 `backend/platforms/README.md`）还会带运行态探测。
-- **推荐清单**：见 [`market/recommendations.json`](market/recommendations.json)——
-  贴吧用 [dsh-tieba-dive](https://github.com/Nekomeow114/dsh-tieba-dive)（已集成薄壳）、
-  QQ/B站养鱼套件试点 [dsh-dot](https://github.com/Kevinwu901113/dsh-dot)、
-  IM 通道 [dsh-im](https://github.com/xmanrui/dsh-im)、
-  抖音自动化 [dsh-douyin-watch](https://github.com/miqian-nomad/dsh-douyin-watch)。
-- **搜索全目录**：DSH 插件页 → 发现 → 索引源，添加
-  `https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json`（9000+ 插件）。
-- **注意**：同一平台二选一——启用社区插件的 QQ/抖音时，先用 dsh-Dfy
-  「模块中心」停用内置对应模块，避免双桥双响应。
+- **管理**：设置 → 我的鱼 → 能力与插件（搜索官方插件市场，一键安装 / 启停 / 卸载）。
+- **dsh_bridge**：把 QQ 消息按会话转给 DSH 的桥接插件，随 dsh-Dfy 自动安装 / 更新；临时没装时会退回 provider 路线（所有对话挤在固定会话）。
+- **能生效 / 不能生效**：改「结果或发送」的插件（表情包、延时、收尾）照常生效；改「AstrBot 发给模型的 prompt」的插件（如认主注入）在插件桥接下不生效——LLM 由 DSH 调，人格与上下文在 DSH 会话里。
+- 旧的「平台插件壳」（贴吧 / 抖音概览聚合页、`market/` 推荐清单入口）已下线，相关插件若仍安装可在 DSH 插件页卸载。
 
 ---
 
@@ -222,7 +225,7 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是同一套配置：
 | 角色与资源 | 导入角色、按压泡泡、图片 / 音频管理 |
 | 厂商额度（选装） | 模型、凭据、火山 coding plan |
 | 碎碎念与对话（桌宠） | 人设、自动碎碎念、对话与清空记忆 |
-| QQ / B站 / 贴吧 / 抖音 | 桥接、群管理、B站账号与养鱼、贴吧扫码登录与心跳、抖音 IM 登录与许可会话、记忆卡、学习画像、语音触发规则 |
+| 我的鱼 / 桌宠 / 维护 | 启动与连接（AstrBot / QQ 接入 / DSH 会话）、人格与语气、能力与插件；桌宠与朗读音色；SnowLuma / AstrBot 安装运行、高级回退、诊断体检 |
 
 ### 语音音源
 
@@ -237,12 +240,13 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是同一套配置：
 | 本地 voxd（8765） | 自己起 GPT-SoVITS 等 voxd 服务 | 本地免费，插件不捆绑模型 |
 | 火山云端复刻（8767） | 自己起声音复刻代理 | 本地免费，插件不捆绑模型 |
 
+> 现在的 DSH 设置页导航：运行 / 我的鱼（启动与连接、人格与语气、能力与插件）/ 桌宠（桌宠、朗读与语音）/ 维护（安装与维护）。
 > 插件不会下载任何 TTS 模型；要 Key 的两条填自己的凭证，回读时按掩码处理。
 > 「在线免费模型」会把待合成文字发往 HuggingFace 的公开 Space。
 
 ### 记忆同步范围
 
-四个平台（QQ / B站 / 贴吧 / 抖音）共用一张记忆卡：
+三个平台（QQ / B站 / 抖音）共用一张记忆卡：
 
 - **全平台可见**：初次相遇、被钉住的锚点、和主人相关的身份记忆。
 - **只在该通道可见**：QQ 私聊流水（受 `includeQqInBili` 控制）、桌宠私下对话（`scope='pet'` 永不进公开平台）。

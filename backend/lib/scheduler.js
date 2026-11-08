@@ -586,8 +586,15 @@ export function startScheduler(ctx, opts) {
     try {
       // 2026-10-20：已经存在就别再 create —— create 对"非空白"的已有会话会**新建一个空壳会话** ✗
       //   （实测：每次重启侧栏都多一个空的 session-xxxx，看着像她开了一堆空会话）
+      // 2026-11：Remote 没暴露 inspect（dfy-raw-chat 已踩过）；用 state 探会话，否则每次都会 create 空壳。
+      const controller = (() => { try { return typeof ctx.get === 'function' ? ctx.get('sessionController') : ctx.sessionController; } catch { return undefined; } })();
+      const exists = async () => {
+        if (controller && typeof controller.state === 'function') return controller.state({ sessionId });
+        if (controller && typeof controller.inspect === 'function') return controller.inspect(sessionId);
+        return false;
+      };
       try {
-        await ctx.sessionController.inspect(sessionId); sessionReady = true;
+        await exists(); sessionReady = true;
         const inspected = ensurePermission('inspect');
         if (!inspected.ok && inspected.reason === 'session-not-active') {
           await new Promise((resolve) => setTimeout(resolve, 80));
@@ -595,7 +602,8 @@ export function startScheduler(ctx, opts) {
         }
         return;
       } catch {}
-      await ctx.sessionController.create({ sessionId, cwd })
+      if (!controller || typeof controller.create !== 'function') throw new Error('sessionController 不可用');
+      await controller.create({ sessionId, cwd })
     } catch {
       /* 已存在就忽略（create 对同 id 会抛）✓ */
     }

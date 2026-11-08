@@ -683,7 +683,11 @@ function replySessionId(conversation) {
 /** 每个抖音会话对应一个 DSH 会话：侧栏能看到对话和思考，模型/工具走 DSH 正常配置。 */
 async function ensureReplySession(controller, conversation) {
   const sessionId = replySessionId(conversation);
-  try { await controller.inspect(sessionId); return sessionId; } catch { /* 还没建过 */ }
+  try {
+    if (controller && typeof controller.state === 'function') await controller.state({ sessionId });
+    else if (controller && typeof controller.inspect === 'function') await controller.inspect(sessionId);
+    return sessionId;
+  } catch { /* 还没建过 */ }
   try {
     await controller.create({ sessionId, cwd: DOUYIN_DIR, agentPreset: 'douyin-chat' });
   } catch (error) {

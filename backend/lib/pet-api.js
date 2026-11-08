@@ -34,7 +34,7 @@ const PET_BODY_LIMIT = 256 * 1024;
  * @param {() => string} opts.currentDshUrl   DSH 当前 Web 地址
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  */
-export function createPetApiService({ chat, purpose, petService, stateDir, petRoot, currentDshUrl, pluginLog = () => {}, version = '' }) {
+export function createPetApiService({ chat, purpose, petService, stateDir, petRoot, currentDshUrl, pluginLog = () => {}, version = '', routeBOn = null, askBrain = null, sendQq = null }) {
   // 2026-11：桌宠数据固定到源码根（与 DSH_HOME 无关）。否则桌面版(~/.dsh)和网页版(~/.dsh-web)
   // 各存一份 host.json/记录，同机切换形态时历史会「断档」。
   const root = petRoot || PET_DATA_DIR;
@@ -273,12 +273,44 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
       if (!text) { json(res, 400, { ok: false, error: '消息不能为空' }); return; }
       const key = ownerKey();
       if (!key) { json(res, 409, { ok: false, error: '还没配置主人 QQ，无法从桌宠发送' }); return; }
+      const owner = chat.ownerInfo?.() || {};
+      // 路线 B：内置桥按设计停着，消息卡不能再去敲 3100（那样只会得到 fetch failed）。
+      // 改成：灌给同一个大脑（DSH 会话 dfy-astrbot）→ 回复直接用 SnowLuma OneBot 发回主人 QQ。
+      const viaRouteB = typeof routeBOn === 'function' && routeBOn() === true;
+      if (viaRouteB) {
+        if (typeof askBrain !== 'function' || typeof sendQq !== 'function') {
+          json(res, 503, { ok: false, error: '路线 B 已接管 QQ，但大脑/发信通道还没就绪（重启 DSH 后再试）' });
+          return;
+        }
+        const entry = pushQqMessage({ role: 'user', sender: owner.name || '主人', text, key });
+        const uin = key.startsWith('private:') ? key.slice('private:'.length) : '';
+        // 关键：**先回 200 再干活**。DSH 跑一轮模型要 5~10 秒，同步等会让消息卡片卡住；
+        // 卡片的回复本来就走事件推送（pushQqMessage → chat.emit），不需要等这个 HTTP 返回。
+        void (async () => {
+          try {
+            const reply = await askBrain(text);
+            if (!reply) {
+              pushQqMessage({ role: 'assistant', sender: owner.name || '主人', text: '（她这轮没产出文本）', key });
+              return;
+            }
+            const sent = await sendQq({ uin, text: reply });
+            pushQqMessage({ role: 'assistant', sender: owner.name || '主人', text: reply, key });
+            if (!sent?.ok) {
+              pluginLog('[pet-api] 路线 B 回复发 QQ 失败：', String(sent?.error ?? '未知'));
+            }
+          } catch (error) {
+            pluginLog('[pet-api] 路线 B 卡片发送失败：', String(error?.message ?? error));
+            pushQqMessage({ role: 'assistant', sender: owner.name || '主人', text: `（她那边出错了：${String(error?.message ?? error).slice(0, 120)}）`, key });
+          }
+        })();
+        json(res, 200, { ok: true, message: entry, queued: true, via: 'route-b' });
+        return;
+      }
       const queued = await callBridge('/api/pet/owner-message', { method: 'POST', body: { key, text }, timeoutMs: 12000 });
       if (!queued.ok || !queued.data?.ok) {
         json(res, 502, { ok: false, error: queued.data?.error || queued.error || '桥接不可达' });
         return;
       }
-      const owner = chat.ownerInfo?.() || {};
       const entry = pushQqMessage({ role: 'user', sender: owner.name || '主人', text, key });
       json(res, 200, { ok: true, message: entry, queued: true });
       return;
@@ -384,5 +416,7 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
     hostFile,
     status: statusForPet,
     token,
+    // 路线 B：AstrBot 收到的 QQ 消息不进桥接，由这里镜像到消息卡片（否则卡片看不到 QQ 对话）。
+    mirror: pushQqMessage,
   };
 }

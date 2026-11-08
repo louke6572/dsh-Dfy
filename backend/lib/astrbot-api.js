@@ -134,7 +134,21 @@ export function createAstrbotApi({ log = () => {} } = {}) {
     async installPlugin(url) {
       const repo = String(url ?? '').trim();
       if (!repo) throw new Error('仓库地址不能为空');
-      const full = /^https?:\/\//.test(repo) ? repo : `https://github.com/${repo.replace(/^\/+/, '')}`;
+      // 安全审查（2026-11）：AstrBot 安装插件 = clone 并加载 Python（等于 RCE），
+      // 所以只接受 GitHub 仓库；不允许任意 http(s) 源。
+      let full;
+      if (/^https?:\/\//i.test(repo)) {
+        let parsed;
+        try { parsed = new URL(repo); } catch { throw new Error('仓库地址不是合法 URL'); }
+        if (parsed.protocol !== 'https:' || !/(^|\.)github\.com$/i.test(parsed.hostname)) {
+          throw new Error('只允许从 GitHub 仓库安装（https://github.com/用户/仓库）');
+        }
+        full = parsed.toString();
+      } else {
+        const shorthand = repo.replace(/^\/+/, '');
+        if (!/^[\w.-]+\/[\w.-]+$/.test(shorthand)) throw new Error('仓库写成「用户/仓库」的形式，例如 astrbot/astrbot_plugin_xxx');
+        full = `https://github.com/${shorthand}`;
+      }
       log(`[astrbot] 安装插件：${full}`);
       return callApi(cfg(), 'POST', '/plugins/install/url', { url: full });
     },
@@ -193,8 +207,16 @@ export function createAstrbotApi({ log = () => {} } = {}) {
     getRouteB() {
       try {
         const conf = readAstrbotConfig(cfg());
-        const entry = (Array.isArray(conf.provider) ? conf.provider : []).find((p) => p && p.id === 'dfy-fish');
-        return { on: Boolean(entry && entry.enable !== false), apiBase: String(entry?.api_base ?? '') };
+        const list = Array.isArray(conf.provider) ? conf.provider : [];
+        const entry = list.find((p) => p && p.id === 'dfy-fish');
+        if (!entry) return { on: false, apiBase: '' };
+        // AstrBot 启动时会把「带 key/api_base 的 provider」规范化成 provider + provider_sources
+        // 两条记录（实测 v4.29.4）：api_base 只留在 source 里，读 entry 会得到空串 →
+        // 面板误报「指向漂移」。所以两处都要认。
+        const sources = Array.isArray(conf.provider_sources) ? conf.provider_sources : [];
+        const source = sources.find((s) => s && s.id === (entry.provider_source_id ?? 'dfy-fish_source')) ?? null;
+        const apiBase = String(entry.api_base ?? source?.api_base ?? '');
+        return { on: entry.enable !== false, apiBase };
       } catch {
         return { on: false, apiBase: '' };
       }
@@ -203,28 +225,60 @@ export function createAstrbotApi({ log = () => {} } = {}) {
     /**
      * 路线切换：把「OpenAI API 兼容」provider 指到 dsh-Dfy 的 /dsh-surfcore/v1（dfy-fish）。
      * on=true 写入并启用；on=false 停用（保留条目，随时切回）。改动后调用方需重启 AstrBot。
+     *
+     * api_base 必须由调用方按**当前 DSH 真实端口**传入（以前默认 3080，DSH 换端口后必然失效）。
+     * key 用本地路口令牌：`/dsh-surfcore/v1/*` 走 localRoute，校验 `Authorization: Bearer <rawChatToken>`。
      */
-    setRouteB(on, apiBase) {
+    setRouteB(on, apiBase, token) {
       const c = cfg();
       const file = path.join(c.cwd || path.join(os.homedir(), 'astrbot'), 'data', 'cmd_config.json');
       const conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-      const list = Array.isArray(conf.provider) ? conf.provider : [];
-      const entry = {
-        id: 'dfy-fish',
+      const SOURCE_ID = 'dfy-fish_source';
+      // 按 AstrBot v4.29.4 规范化的形状写：provider 只做引用，key/api_base 落在
+      // provider_sources（它启动时会自己迁移成这个形状；直接写源形状可以避免
+      // 每次重启都改一次配置、也避免 getRouteB 读不到 api_base）。
+      const source = {
+        id: SOURCE_ID,
         provider: 'dfy-fish',
         type: 'openai_chat_completion',
         provider_type: 'chat_completion',
-        enable: on === true,
-        key: ['dfy-local'],
-        api_base: String(apiBase ?? 'http://127.0.0.1:3080/dsh-surfcore/v1'),
+        key: [String(token ?? '').trim() || 'dfy-local'],
+        api_base: String(apiBase ?? ''),
         timeout: 240,
         proxy: '',
         custom_headers: {},
       };
+      const sources = Array.isArray(conf.provider_sources) ? conf.provider_sources : [];
+      const sIdx = sources.findIndex((s) => s && s.id === SOURCE_ID);
+      if (sIdx >= 0) sources[sIdx] = { ...sources[sIdx], ...source };
+      else sources.push(source);
+      conf.provider_sources = sources;
+
+      const list = Array.isArray(conf.provider) ? conf.provider : [];
+      const entry = {
+        id: 'dfy-fish',
+        enable: on === true,
+        provider_source_id: SOURCE_ID,
+        modalities: [],
+        custom_extra_body: {},
+      };
       const idx = list.findIndex((p) => p && p.id === 'dfy-fish');
-      if (idx >= 0) list[idx] = { ...list[idx], ...entry };
+      if (idx >= 0) list[idx] = entry;
       else list.push(entry);
       conf.provider = list;
+      // 只写 provider 条目还不够：agent_runner 的 provider_id 为空时 AstrBot 会自己挑
+      // （实测挑的是列表里第一个 deepseek）→ 面板显示「路线 B 使用中」，实际还走路线 A。
+      // 所以显式把当前模型指向 dfy-fish；切回路线 A 时只解除自己写的值，不动用户手选的别的 provider。
+      conf.agent_runner = conf.agent_runner ?? {};
+      conf.agent_runner.config = conf.agent_runner.config ?? {};
+      const model = conf.agent_runner.config.model ?? {};
+      if (on === true) {
+        model.provider_id = 'dfy-fish';
+        model.fallback_provider_ids = Array.isArray(model.fallback_provider_ids) ? model.fallback_provider_ids : [];
+      } else if (String(model.provider_id ?? '') === 'dfy-fish') {
+        model.provider_id = '';
+      }
+      conf.agent_runner.config.model = model;
       fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
       return { ok: true, needRestart: true };
     },
@@ -348,6 +402,9 @@ async function chatTestImpl(cfg, text, state, log) {
     try { msg = JSON.parse(raw)?.message ?? msg; } catch {}
     throw new Error(`发送失败（HTTP ${res.status}）：${msg}`);
   }
+  // 2026-11 修复：这里以前引用了未声明的 `contentType` → 每次「跟她试一句话」都抛 ReferenceError，
+  // 面板会把「自检」错误显示成「大脑不回话」，误导排查。
+  const contentType = String(res.headers.get('content-type') ?? '');
   // 响应是 SSE 帧：回复文本在 type:"plain" 的 data 里（实测帧型 session_id/user_message_saved/run_started/plain/message_saved/end）。
   let reply = '';
   if (contentType.includes('event-stream') || raw.startsWith('data:') || raw.includes('\ndata:')) {

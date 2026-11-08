@@ -28,7 +28,8 @@ import {
   QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
-import { discoverSnowLumaConnection, readOneBotTokens, snowLumaHomeCandidates } from '../../src/snowluma-conn.js';
+import { discoverSnowLumaConnection, ensureAstrbotWsClient, readOneBotTokens, snowLumaHomeCandidates } from '../../src/snowluma-conn.js';
+import { bearerFromHeader, bridgeTokenMatches, ensureBridgeToken, ensureRawChatToken, rawChatTokenMatches } from './raw-chat-token.js';
 import { findSnowLumaInstall as findSnowLumaInstallIn, normalizeSnowLumaInstall, snowLumaMissingReport } from './snowluma-install.js';
 import { buildInstallChecks, installOk, planDoctorFix } from './doctor.js';
 import {
@@ -41,7 +42,9 @@ import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
 import { createAstrbotSupervisor } from './astrbot-supervisor.js';
 import { createAstrbotApi } from './astrbot-api.js';
+import { sendQqPrivate } from './qq-direct.js';
 import { createRawChat, openAiCompletion, openAiStreamChunks } from './dfy-raw-chat.js';
+import { createQqBridgeChat } from './qq-bridge-chat.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -250,7 +253,54 @@ export function apply(ctx) {
   // AstrBot 面板 API（减法版）：插件列表/启停/安装/卸载，JWT 用它自己配置里的 secret 签。
   const astrbotApi = createAstrbotApi({ log: pluginLog });
   // 路线 B 路口：把 DSH 会话暴露成 OpenAI 兼容对话端点，AstrBot 的「OpenAI API 兼容」provider 指到这里。
-  const rawChat = createRawChat({ ctx, log: pluginLog });
+  // resolveModel：QQ 里那条鱼的模型要跟 DSH 的**默认模型**走（用户主会话用什么，她就用什么），
+  // 而不是 dsh-Dfy 自己那份全局模型选择（以前是 zipu/glm-5.3-flash → 听起来不像 DSH 里的她）。
+  const rawChat = createRawChat({
+    ctx,
+    log: pluginLog,
+    resolveModel: () => {
+      try {
+        const selection = defaultModelService?.currentSelection?.() ?? {};
+        return selection?.provider && selection?.model
+          ? { provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort }
+          : null;
+      } catch { return null; }
+    },
+  });
+  // QQ 桥接插件通道：AstrBot 插件把 (umo, 文本) POST 过来，这里按 QQ 会话建/复用 DSH 会话。
+  // 和「OpenAI provider」那条路的区别：这条路带得动会话身份，所以每段 QQ 对话能有自己的
+  // DSH 会话窗口（侧栏可见、可切模型、能看思考/上下文）。
+  const qqBridgeChat = createQqBridgeChat({
+    ctx,
+    log: pluginLog,
+    getBaseUrl: () => currentDshUrl(),
+    resolveModel: () => {
+      try {
+        const selection = defaultModelService?.currentSelection?.() ?? {};
+        return selection?.provider && selection?.model
+          ? { provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort }
+          : null;
+      } catch { return null; }
+    },
+  });
+  // 给 AstrBot 插件的发现文件：端口漂移/令牌轮换都靠它（每 60 秒重写一次）。
+  function writeQqBridgeHostFile() {
+    try {
+      const dir = path.join(STATE_DIR, 'astrbot');
+      fs.mkdirSync(dir, { recursive: true });
+      writeJsonAtomic(path.join(dir, 'dsh-bridge.json'), {
+        version: 1,
+        baseUrl: String(currentDshUrl() || '').replace(/\/+$/, ''),
+        token: ensureBridgeToken(),
+        path: '/dsh-surfcore/v1/qq-bridge/ask',
+        updatedAt: new Date().toISOString(),
+      });
+      return true;
+    } catch (error) {
+      pluginLog('[qq-bridge] 写 dsh-bridge.json 失败：', String(error?.message ?? error));
+      return false;
+    }
+  }
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
@@ -342,6 +392,14 @@ export function apply(ctx) {
     currentDshUrl,
     pluginLog,
     version: VERSION,
+    // 路线 B：内置桥按设计停着，但「桌宠消息卡片」还得能说话——它改走
+    //   qq/send → 同一个大脑（DSH 会话 dfy-astrbot）→ SnowLuma OneBot 直发主人 QQ。
+    // astrbotApi / rawChat 在本函数后面才创建，用闭包延迟取值（请求发生时早已就绪）。
+    routeBOn: () => {
+      try { return astrbotApi.getRouteB().on === true; } catch { return false; }
+    },
+    askBrain: (text) => rawChat.ask(text),
+    sendQq: (args) => sendQqPrivate(args),
   });
 
   // ── 能力槽（capability slot）─────────────────────────────────────────────
@@ -882,6 +940,8 @@ export function apply(ctx) {
   };
 
   const disposers = [];
+  /** 鉴权服务缺失只告警一次，避免刷日志。 */
+  let connMissingWarned = false;
   function route(kind, pathname, handler) {
     disposers.push(ctx.webServer.register({
       kind,
@@ -898,13 +958,21 @@ export function apply(ctx) {
         }
         try {
           const conn = ctx.get('connection');
-          if (conn && typeof conn.requestRejection === 'function') {
-            const code = conn.requestRejection(req);
-            if (code !== undefined && code !== null && code !== false) {
-              res.statusCode = typeof code === 'number' ? code : 403;
-              res.end();
-              return;
+          // fail-closed：拿不到 DSH 的鉴权服务（升级改名/被停用）时，绝不能静默降级成
+          // 「本机免登录管理面」——这个 API 能 spawn 进程、装插件、写配置。
+          if (!conn || typeof conn.requestRejection !== 'function') {
+            if (!connMissingWarned) {
+              connMissingWarned = true;
+              pluginLog('[api] connection.requestRejection 不可用：设置页管理接口已 fail-closed（503）');
             }
+            json(res, 503, { ok: false, code: 'AUTH_UNAVAILABLE', error: 'DSH 鉴权服务不可用，已拒绝所有管理接口（fail-closed）。重启 DSH 或检查 DSH 版本。' });
+            return;
+          }
+          const code = conn.requestRejection(req);
+          if (code !== undefined && code !== null && code !== false) {
+            res.statusCode = typeof code === 'number' ? code : 403;
+            res.end();
+            return;
           }
           await handler(req, res);
         } catch (error) {
@@ -914,6 +982,42 @@ export function apply(ctx) {
           const status = Number(error?.statusCode);
           const code = status >= 400 && status < 600 ? status : 500;
           try { json(res, code, { ok: false, code: String(error?.code ?? ''), error: String(error?.message ?? error) }); } catch {}
+        }
+      },
+    }));
+  }
+
+  /**
+   * 「本机服务间」专用路由：给 AstrBot 之类的本机进程调，不经过 DSH 的浏览器会话鉴权。
+   *
+   * 背景（实测）：插件路由统一过 `connection.requestRejection`，AstrBot 没有浏览器
+   * Cookie，带 `Authorization: Bearer dfy-local` 也一样 401。所以这类路口自己守：
+   *   · 只收本机回环（非回环 403）；
+   *   · 必须带 `Authorization: Bearer <rawChatToken>`（令牌由 dsh-Dfy 写进 AstrBot provider 的 key）；
+   *   · 401 响应沿用 OpenAI 错误体，AstrBot 的 provider 测试能直接看懂。
+   */
+  function localRoute(kind, pathname, handler, { tokenKind = 'raw' } = {}) {
+    disposers.push(ctx.webServer.register({
+      kind,
+      path: pathname,
+      handler: async (req, res) => {
+        if (!isLoopbackReq(req)) {
+          json(res, 403, { error: { message: '只接受本机回环访问', type: 'local_only' } });
+          return;
+        }
+        const presented = bearerFromHeader(req.headers?.authorization);
+        const authorized = tokenKind === 'bridge' ? bridgeTokenMatches(presented) : rawChatTokenMatches(presented);
+        if (!authorized) {
+          json(res, 401, { error: { message: '本地路口令牌无效：设置 → 维护 → 「桥接发现文件」会自动重写，或重载一次 dsh-Dfy 插件', type: 'invalid_api_key', code: 'invalid_api_key' } });
+          return;
+        }
+        try {
+          await handler(req, res);
+        } catch (error) {
+          pluginLog('本地路口失败：', `${req.method} ${req.url} — ${error?.message ?? error}`);
+          const status = Number(error?.statusCode);
+          const code = status >= 400 && status < 600 ? status : 500;
+          try { json(res, code, { error: { message: String(error?.message ?? error), type: 'local_route_error' } }); } catch {}
         }
       },
     }));
@@ -993,6 +1097,17 @@ export function apply(ctx) {
   }
 
   // ── 概览 ────────────────────────────────────────────────────────────────
+  /** AstrBot 插件清单缓存（30 秒）：overview 每 10 秒轮询，别每次打 AstrBot API。 */
+  let astrbotPluginsCache = { at: 0, value: null };
+  async function astrbotPluginsCached() {
+    const now = Date.now();
+    if (astrbotPluginsCache.value !== null && now - astrbotPluginsCache.at < 30_000) return astrbotPluginsCache.value;
+    let value = null;
+    try { value = await astrbotApi.listPlugins(); } catch { value = null; }
+    astrbotPluginsCache = { at: now, value };
+    return value;
+  }
+
   async function overview() {
     const all = readAll();
     const snow = readQqConfig().config?.snowluma ?? {};
@@ -1016,6 +1131,34 @@ export function apply(ctx) {
         dshMode = row?.value?.mode ?? null;
       }
     } catch {}
+    // 路线 B（AstrBot 接管 QQ、大脑在 DSH）时，概览顶部状态点和「QQ 桥接」卡都要换说法：
+    // 内置桥「未运行」在那条路线下是正确状态，不是故障。qqConnected 看 6199 有没有连接。
+    // 路线状态：插件桥接（bridgePlugin=true）才是当前推荐架构；provider 路线只作回退。
+    // 概览/顶栏/向导都靠 mode 判断，避免「同一状态两页说法相反」。
+    let routeB = { on: false, apiBase: '', qqConnected: false, bridgePlugin: false, mode: 'off', astrbot: null };
+    try {
+      const [rb, plugins, supervisor] = await Promise.all([
+        Promise.resolve(astrbotApi.getRouteB()),
+        astrbotPluginsCached(),
+        astrbotSupervisor.status().catch(() => null),
+      ]);
+      const bridgePlugin = Array.isArray(plugins)
+        && plugins.some((plugin) => plugin && plugin.name === 'astrbot_plugin_dsh_bridge' && plugin.enabled === true);
+      routeB = {
+        ...rb,
+        qqConnected: await astrbotApi.isQqConnected().catch(() => false),
+        bridgePlugin,
+        mode: bridgePlugin ? 'plugin' : (rb.on ? 'provider' : 'off'),
+        astrbot: {
+          running: supervisor?.running === true,
+          port: supervisor?.port ?? null,
+          plugins: Array.isArray(plugins) ? plugins.length : 0,
+          initialized: supervisor?.initialized !== false,
+        },
+      };
+    } catch (error) {
+      pluginLog('[overview] 读取路线 B 状态失败：', error?.message ?? error);
+    }
     return {
       ok: true,
       version: VERSION,
@@ -1032,6 +1175,8 @@ export function apply(ctx) {
       platforms: platforms.list(),
       // 平台启动开关：设置页顶部状态点、概览三按钮的可用性都读它。
       platformStart: platformStartState(),
+      // 路线 B 状态：接管中时顶部/概览要换成「QQ 由 AstrBot 管」，内置桥未运行是正常态。
+      routeB,
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,
@@ -1045,6 +1190,10 @@ export function apply(ctx) {
         diagnosis: snowDiag,
         // 控制台地址（扫码登录 / 加账号都在这里）；up 只代表端口在听，不代表已登录。
         webui: { ...snowLumaWebui(), up: await portOpen(snowLumaWebui().port) },
+        // SnowLuma 自己的 OneBot 服务（3000 HTTP / 3001 WS）在不在听——「进程在跑」的硬指标。
+        runtime: {
+          onebotUp: (await portOpen(3000)) || (await portOpen(3001)),
+        },
       },
       mode: {
         local: mode.localMode,
@@ -1814,7 +1963,6 @@ ${body}`;
       bridgeSrc: fs.existsSync(bridgeSrc),
       bridgeMasked: maskPath(bridgeSrc),
       profile: dshProfileWithSurfcore(),
-      token: String(qqCfg.consoleToken ?? '').trim(),
     });
   }
 
@@ -1947,6 +2095,21 @@ ${body}`;
     if (req.method === 'GET') {
       const checks = [];
       const add = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
+      // 2026-11 新架构（AstrBot 插件桥接）的检查要带 warn 级别和修复建议。
+      const addLevel = (name, level, detail = '', fix = '') => checks.push({ name, level, ok: level !== 'fail', detail, fix });
+      let bridge = { running: false };
+      try { bridge = await bridgeStatus(); } catch {}
+      // 先探测新架构的三件套：AstrBot 进程 / dsh_bridge 插件 / SnowLuma OneBot
+      let astrbotStatus = null;
+      let astrbotPlugins = [];
+      try { astrbotStatus = await astrbotSupervisor.status(); } catch { astrbotStatus = null; }
+      try { astrbotPlugins = await astrbotApi.listPlugins(); } catch { astrbotPlugins = []; }
+      const bridgePlugin = astrbotPlugins.find((p) => p && p.name === 'astrbot_plugin_dsh_bridge' && p.enabled === true) ?? null;
+      const astrbotQq = await astrbotApi.isQqConnected().catch(() => false);
+      const snowRuntimeUp = (await portOpen(3000)) || (await portOpen(3001));
+      // 旧的「SnowLuma 在线」是按内置桥的判断（桥停着就报 onebot-rejected），插件桥接模式下换真相。
+      const install = (await installChecks()).filter((c) => !(bridgePlugin && c.name === 'SnowLuma 在线'));
+
       add('QQ 桥接源码', fs.existsSync(path.join(QQBOT_ROOT, 'src', 'bridge.js')), maskPath(path.join(QQBOT_ROOT, 'src', 'bridge.js')));
       add('B站工具链', fs.existsSync(BILI_MJS), maskPath(BILI_MJS));
       add('B站配置', fs.existsSync(BILI_CONFIG), maskPath(BILI_CONFIG));
@@ -1960,11 +2123,58 @@ ${body}`;
         const result = await new Promise((resolve) => execFile('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true }, (error) => resolve(!error)));
         ffmpeg = result;
       } catch {}
-      add('ffmpeg（可选）', ffmpeg, ffmpeg ? '可用' : '未安装：只影响“抽帧看画面”');
-      let bridge = { running: false };
-      try { bridge = await bridgeStatus(); } catch {}
-      add('QQ 桥接', bridge.running, bridge.running ? `端口 ${bridge.port}` : '未运行');
-      const install = await installChecks();
+      add('ffmpeg（可选）', ffmpeg, ffmpeg ? '可用' : '未安装：只影响"抽帧看画面"');
+
+      // ── 新架构检查：QQ → SnowLuma → AstrBot（插件层）→ DSH 分会话 ──
+      addLevel('AstrBot 运行', astrbotStatus?.running ? 'ok' : 'warn',
+        astrbotStatus?.running ? `端口 ${astrbotStatus.port} · 插件 ${astrbotPlugins.length} 个` : '未运行（打开 DSH 会被自动拉起）',
+        astrbotStatus?.running ? '' : '设置 → 维护 → AstrBot → 拉起');
+      addLevel('QQ 接入（SnowLuma → AstrBot）', astrbotQq ? 'ok' : 'warn',
+        astrbotQq ? '6199 反向 WS 已连接' : '6199 没有连接：SnowLuma 没把 QQ 接进 AstrBot',
+        astrbotQq ? '' : '重启一次 SnowLuma（自动重连 5 秒）');
+      addLevel('QQ 桥接插件（dsh_bridge）', bridgePlugin ? 'ok' : 'warn',
+        bridgePlugin ? `${bridgePlugin.name} v${bridgePlugin.version}` : '未安装 / 未启用：QQ 会退回 provider 路线（一个固定会话，没有每段对话的窗口）',
+        bridgePlugin ? '' : '设置 → 我的鱼 → 能力与插件 → 安装 astrbot_plugin_dsh_bridge');
+      const bridgeHostFile = path.join(STATE_DIR, 'astrbot', 'dsh-bridge.json');
+      let bridgeHost = null;
+      try { bridgeHost = JSON.parse(fs.readFileSync(bridgeHostFile, 'utf8')); } catch { bridgeHost = null; }
+      const bridgeHostOk = Boolean(bridgeHost?.baseUrl && bridgeHost?.token);
+      addLevel('桥接发现文件', bridgeHostOk ? 'ok' : 'warn',
+        bridgeHostOk ? `${bridgeHost.baseUrl}（DSH 每分钟重写，端口漂移自动跟随）` : '不存在 / 字段不全：插件加载时才会写',
+        bridgeHostOk ? '' : '重载一次 dsh-Dfy 插件（或重启 DSH）');
+      addLevel('SnowLuma OneBot 端口', snowRuntimeUp ? 'ok' : 'warn',
+        snowRuntimeUp ? '3000 / 3001 在听' : '不在听：SnowLuma 没在运行（插件会自动拉起）',
+        snowRuntimeUp ? '' : '概览 → 一键开始，或在维护页「只打开 SnowLuma」');
+      if (bridgePlugin) {
+        addLevel('内置 QQ 桥（旧）', bridge.running ? 'warn' : 'ok',
+          bridge.running ? `仍在运行（端口 ${bridge.port}）：插件桥接模式下会和 AstrBot 双回复` : '已停止（插件桥接模式的正确状态）',
+          bridge.running ? '设置 → 维护 → 模块与能力：停用 QQ 模块即可停旧桥' : '');
+      } else {
+        addLevel('QQ 桥接', bridge.running ? 'ok' : 'fail', bridge.running ? `端口 ${bridge.port}` : '未运行', bridge.running ? '' : '概览 → 一键开始');
+      }
+      // provider 指向：插件桥接模式下不影响 QQ，只影响面板「测试 DSH 大脑」/回退路线
+      const routeB = (() => { try { return astrbotApi.getRouteB(); } catch { return { on: false, apiBase: '' }; } })();
+      const currentBase = String(currentDshUrl() || '').replace(/\/+$/, '');
+      const expectedApiBase = currentBase ? `${currentBase}/dsh-surfcore/v1` : '';
+      const routeBStale = Boolean(routeB.on && expectedApiBase && String(routeB.apiBase ?? '').replace(/\/+$/, '') !== expectedApiBase);
+      // 本机凭据目录权限（Windows 默认给 Users/Authenticated Users 写权限 → 同机其他账户可读凭据/聊天记录）
+      try {
+        if (process.platform === 'win32') {
+          const aclOut = await new Promise((resolve) => {
+            execFile('icacls', [STATE_DIR], { timeout: 5000, windowsHide: true }, (error, stdout) => resolve(error ? '' : String(stdout)));
+          });
+          const broad = /(Authenticated Users|Users|Everyone):\(.*[MW]/.test(aclOut);
+          addLevel('本机凭据目录权限', broad ? 'warn' : 'ok',
+            broad ? '当前用户组对凭据/聊天记录目录有写权限（Windows 默认）：同机其他账户可能读到 token 与聊天记录'
+              : (aclOut ? '已收紧' : '读不到 ACL：忽略'),
+            broad ? '以管理员运行 scripts/harden-state-acl.mjs（或 icacls 收紧 $DSH_HOME/surfcore）' : '');
+        } else {
+          addLevel('本机凭据目录权限', 'ok', '非 Windows：依赖 0600 文件权限', '');
+        }
+      } catch { /* ACL 检查失败不影响体检 */ }
+      addLevel('dfy-fish 指向', routeBStale ? 'warn' : 'ok',
+        routeBStale ? `写的是 ${routeB.apiBase}，当前 DSH 在 ${expectedApiBase}` : (routeB.apiBase || '未配置（插件桥接模式下不影响 QQ）'),
+        routeBStale ? '设置 → 我的鱼 → 启动与连接 → 修复指向' : '');
 
       // 同名检查只留一条（installChecks 与旧 checks 有重叠，比如"QQ 桥接源码"）。
       const seen = new Set();
@@ -2192,7 +2402,7 @@ ${body}`;
     if (webuiUp) {
       return { state: 'needs-login', hint: `SnowLuma 已启动但还没登录：打开 ${webui.url} 扫码/登录` };
     }
-    return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
+    return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → 维护 → SnowLuma 安装与运行 → 只打开 SnowLuma' };
   }
 
   // SnowLuma 自带「发现 QQ 进程就自动注入」的开关：app/config/runtime.json 的 hookAutoLoad。
@@ -2234,6 +2444,10 @@ ${body}`;
   // 实测 Node 的 spawn({ windowsHide: true, detached: true }) 仍会弹出一个 Windows Terminal 标签页
   // （标题就是 node.exe 路径），用户反馈的「SnowLuma 启动还有命令弹窗」就是这个。
   function spawnHidden(commandLine, cwd) {
+    // 命令/路径里出现换行会把 .vbs 拆成两行、等于往脚本里注入语句；引号已有 `""` 转义，
+    // 换行没有——所以在所有平台一律拒绝换行（安全审查 2026-11）。
+    if (/[\r\n]/.test(String(commandLine ?? ''))) throw new Error('命令里不能含换行');
+    if (/[\r\n]/.test(String(cwd ?? ''))) throw new Error('工作目录不能含换行');
     if (process.platform !== 'win32') {
       spawn(String(commandLine), [], { cwd, detached: true, stdio: 'ignore', windowsHide: true }).unref();
       return true;
@@ -2262,7 +2476,7 @@ ${body}`;
     }
     const cfg = readQqConfig().config?.snowluma ?? {};
     if (cfg.allowLaunch !== true) {
-      return { ok: false, error: '未开启「允许插件打开 SnowLuma」：设置 → SurfCore → QQ → SnowLuma' };
+      return { ok: false, error: '未开启「允许插件打开 SnowLuma」：设置 → 维护 → SnowLuma 安装与运行（重新检测一次会写入允许开关）' };
     }
     const webui = snowLumaWebui();
 
@@ -2597,6 +2811,13 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (!enabled && id === 'douyin') {
       // 抖音模块一停就连观看一起收掉，避免「页面关了浏览器还在跑」。
       try { await douyinStop(); } catch {}
+    }
+    if (!enabled && id === 'qq') {
+      // 2026-11 实测坑：模块停用只隐藏导航，**不停桥**——用户点了「停用旧桥」以为已交给 AstrBot，
+      // 实际桥还在收发，接上 AstrBot 后就变成两个大脑同时回 QQ（双回复）。
+      // 真停桥：关掉平台启动开关（防止 2 分钟后端口漂移自愈又把它拉起来）+ 立即 stop。
+      try { saveUnified({ platforms: { start: { qq: false } } }); } catch (error) { pluginLog('[module] 关 QQ 启动开关失败：', error?.message ?? error); }
+      try { await stopBridge(); } catch (error) { pluginLog('[module] 停 QQ 桥失败：', error?.message ?? error); }
     }
     pluginLog(`[module] ${id} → ${enabled ? '启用' : '停用'}`);
     json(res, 200, { ok: true, modules: moduleList(readUnified().config) });
@@ -3007,7 +3228,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try {
       if (id === 'qq') {
         if (!platformStartEnabled('qq')) {
-          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「维护 → QQ（旧桥）」打开「启动 QQ」并保存' });
         }
         const status = await bridgeStatus();
         const stale = await bridgeStaleReason(status);
@@ -3093,7 +3314,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (action === 'status') { json(res, 200, { ok: true, status: await bridgeStatus() }); return; }
     if (action === 'start') {
       if (!platformStartEnabled('qq')) {
-        json(res, 409, { ok: false, error: 'QQ 启动开关已关闭：去「QQ」页打开「启动 QQ」并保存' });
+        json(res, 409, { ok: false, error: 'QQ 启动开关已关闭：去「维护 → QQ（旧桥）」打开「启动 QQ」并保存' });
         return;
       }
       json(res, 200, await startBridge({ dshWebUrl: currentDshUrl() }));
@@ -3724,10 +3945,41 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── 日志 ────────────────────────────────────────────────────────────────
+  /** 日志里可能混进令牌/Key：回给设置页前先按已知秘密值做替换（安全审查 2026-11）。 */
+  function redactLogText(text) {
+    let out = String(text ?? '');
+    const secrets = new Set();
+    try {
+      const snow = readQqConfig().config?.snowluma ?? {};
+      for (const value of [snow.accessToken, snow.wsToken, snow.webuiPassword]) {
+        const s = String(value ?? '').trim();
+        if (s.length >= 8) secrets.add(s);
+      }
+    } catch { /* 配置读不到就不加 */ }
+    try { secrets.add(ensureRawChatToken()); } catch { /* 忽略 */ }
+    try { secrets.add(ensureBridgeToken()); } catch { /* 忽略 */ }
+    try {
+      let cwd = '';
+      try { cwd = String(readUnified().config.astrbot?.cwd || '').trim(); } catch { cwd = ''; }
+      if (!cwd) cwd = path.join(os.homedir(), 'astrbot');
+      const conf = JSON.parse(fs.readFileSync(path.join(cwd, 'data', 'cmd_config.json'), 'utf8').replace(/^\uFEFF/, ''));
+      const secret = String(conf?.dashboard?.jwt_secret ?? '');
+      if (secret.length >= 8) secrets.add(secret);
+      for (const source of (Array.isArray(conf?.provider_sources) ? conf.provider_sources : [])) {
+        for (const key of (Array.isArray(source?.key) ? source.key : [])) {
+          const s = String(key ?? '').trim();
+          if (s.length >= 12) secrets.add(s);
+        }
+      }
+    } catch { /* AstrBot 没装/没初始化时没有这些秘密 */ }
+    for (const s of secrets) { if (s) out = out.split(s).join('***'); }
+    return out.replace(/sk-[A-Za-z0-9_-]{16,}/g, 'sk-***');
+  }
+
   function handleLogs(res, url) {
     const lines = Math.max(10, Math.min(500, Number(url.searchParams.get('lines')) || 120));
-    const plugin = readTextTail(PLUGIN_LOG).split('\n').slice(-lines).join('\n');
-    const bridge = bridgeLogTail(lines);
+    const plugin = redactLogText(readTextTail(PLUGIN_LOG).split('\n').slice(-lines).join('\n'));
+    const bridge = redactLogText(bridgeLogTail(lines));
     json(res, 200, { ok: true, plugin, bridge, paths: { pluginLog: PLUGIN_LOG, bridgeLog: path.join(QQ_STATE_DIR(), 'bridge.log') } });
   }
 
@@ -3961,7 +4213,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     // 模块闸门：被停用的模块，它的接口前缀一律 410（核心接口不在映射表里，永远放行）。
     const gatedModule = moduleForPath(pathname, API_PREFIX);
     if (gatedModule && !isModuleEnabled(readUnified().config, gatedModule)) {
-      json(res, 410, { ok: false, code: 'MODULE_DISABLED', module: gatedModule, error: `模块「${gatedModule}」已停用，可在 系统 → 模块中心 启用。` });
+      json(res, 410, { ok: false, code: 'MODULE_DISABLED', module: gatedModule, error: `模块「${gatedModule}」已停用，可在 维护 → 模块与能力 启用。` });
       return;
     }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
@@ -4011,9 +4263,31 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/astrbot/panel`) {
       try {
         const [plugins, qqConnected] = await Promise.all([astrbotApi.listPlugins(), astrbotApi.isQqConnected()]);
-        json(res, 200, { ok: true, plugins, qqConnected, routeB: astrbotApi.getRouteB() });
+        // 路线 B 指向是否漂移：DSH 重启端口会变，写死的 api_base 就打到空端口上（2026-11 实际踩过：3080 失效）。
+        const routeB = astrbotApi.getRouteB();
+        const current = currentDshUrl();
+        const expectedApiBase = current ? `${current}/dsh-surfcore/v1` : '';
+        const normUrl = (value) => String(value ?? '').trim().replace(/\/+$/, '');
+        routeB.stale = Boolean(routeB.on && expectedApiBase && normUrl(routeB.apiBase) !== normUrl(expectedApiBase));
+        routeB.expectedApiBase = expectedApiBase;
+        routeB.tokenReady = Boolean(ensureRawChatToken());
+        // 「插件桥接模式」：AstrBot 里装了 dsh_bridge 插件时，QQ 消息走插件 → DSH 分会话，
+        // 不再依赖 dfy-fish provider。这时 api_base 漂移只影响面板自测，不该当故障报警。
+        routeB.bridgePlugin = plugins.some((p) => p && p.name === 'astrbot_plugin_dsh_bridge' && p.enabled === true);
+        routeB.mode = routeB.bridgePlugin ? 'plugin' : (routeB.on ? 'provider' : 'off');
+        // SnowLuma → AstrBot 的出站客户端以前是手工配置（不写就会「插件装了用不了」）；这里自愈，只增补缺失项。
+        let snowlumaClient = { ok: false, changed: false };
+        try {
+          snowlumaClient = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
+        } catch (error) {
+          snowlumaClient = { ok: false, changed: false, reason: String(error?.message ?? error) };
+        }
+        json(res, 200, {
+          ok: true, plugins, qqConnected, routeB,
+          snowlumaClient: { ...snowlumaClient, needRestart: snowlumaClient.changed === true && qqConnected !== true },
+        });
       } catch (error) {
-        json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [], qqConnected: false, routeB: { on: false, apiBase: '' } });
+        json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [], qqConnected: false, routeB: { on: false, apiBase: '' }, snowlumaClient: { ok: false, changed: false } });
       }
       return;
     }
@@ -4021,9 +4295,29 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
       const body = await readJsonBody(req);
       try {
-        const r = astrbotApi.setRouteB(body.on === true, body.apiBase);
-        if (r.needRestart) await astrbotSupervisor.restart();
-        json(res, 200, { ok: true, message: body.on === true ? '已切到路线 B：对话回 DSH 会话（AstrBot 重启约 30 秒）' : '已切回路线 A：AstrBot 直连模型' });
+        // api_base 必须跟着当前 DSH 的真实端口走：硬编码 3080 在 DSH 换端口后必然 404/拒连。
+        const current = currentDshUrl();
+        const apiBase = String(body.apiBase ?? '').trim() || (current ? `${current}/dsh-surfcore/v1` : '');
+        if (body.on === true && !apiBase) throw new Error('不知道当前 DSH 的地址（webServer 端口还没就绪，稍后重试）');
+        const token = ensureRawChatToken();
+        const r = astrbotApi.setRouteB(body.on === true, apiBase, token);
+        let snowlumaClient = { ok: false, changed: false };
+        try {
+          snowlumaClient = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
+        } catch (error) {
+          snowlumaClient = { ok: false, changed: false, reason: String(error?.message ?? error) };
+        }
+        // 重启可能被拒绝：supervisor 只肯重启「自己拉起的」AstrBot（用户手动跑的不动手）。
+        // 以前这里吞掉返回值 → 面板显示「已切换」，实际运行中的 AstrBot 还是旧 provider。
+        const restart = r.needRestart
+          ? await astrbotSupervisor.restart().catch((error) => ({ ok: false, error: String(error?.message ?? error) }))
+          : null;
+        const message = [
+          body.on === true ? '已切到路线 B：对话回 DSH 会话（AstrBot 重启约 30 秒）' : '已切回路线 A：AstrBot 直连模型',
+          snowlumaClient.changed ? 'SnowLuma 接入配置已写入：重启一次 SnowLuma 生效' : '',
+          restart && restart.ok === false ? `但 AstrBot 没重启成功（${restart.error ?? '未知原因'}）：请手动重启它，配置才会生效` : '',
+        ].filter(Boolean).join('；');
+        json(res, 200, { ok: true, message, apiBase, snowlumaClient, restart });
       } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
@@ -4032,6 +4326,18 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const body = await readJsonBody(req);
       try { json(res, 200, { ok: true, ...(await astrbotApi.chatTest(body.text)) }); }
       catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
+      return;
+    }
+    // 插件桥接模式的自测：直接走 DSH 会话（和 QQ 消息同一条 DSH 路径，只是不经过 QQ/AstrBot 发送）
+    if (pathname === `${API_PREFIX}/astrbot/qq-bridge-test`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      const text = String(body.text ?? '').trim();
+      if (!text) { json(res, 200, { ok: false, error: '先输入一句话' }); return; }
+      try {
+        const r = await qqBridgeChat.ask({ key: 'panel-test', text });
+        json(res, 200, { ok: true, reply: r.reply, sessionId: r.sessionId });
+      } catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/plugins/install`) {
@@ -4207,16 +4513,21 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 不能塞进 /dsh-surfcore/api：那里有 DSH 的 connection.requestRejection（桌宠进程没有会话 Cookie，会 401）。
   // ── 路线 B 路口：OpenAI 兼容端点（AstrBot 的「OpenAI API 兼容」provider 指到这里）──
   // AstrBot 组装好人格/记忆后把消息发过来，我们灌进 DSH 会话 dfy-astrbot，鱼的回复以 OpenAI 格式返回。
-  // 对话全程在 DSH 会话里可见（思考过程/模型/上下文都在 DSH 调）；本机回环之外一律拒绝（route() 已带守卫）。
-  route('exact', '/dsh-surfcore/v1/chat/completions', async (req, res) => {
+  // 对话全程在 DSH 会话里可见（思考过程/模型/上下文都在 DSH 调）。
+  // 鉴权：本机回环 + localRoute 自己的 Bearer 令牌（AstrBot 没有 DSH 浏览器 Cookie，过不了 requestRejection）。
+  localRoute('exact', '/dsh-surfcore/v1/chat/completions', async (req, res) => {
     if (req.method !== 'POST') { json(res, 405, { error: { message: '只支持 POST' } }); return; }
     const body = await readJsonBody(req);
     const text = rawChat.lastUserText(body.messages);
     if (!text.trim()) { json(res, 400, { error: { message: 'messages 里没有用户消息' } }); return; }
     const model = String(body.model ?? 'dfy-fish');
     const id = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    // 路线 B 下 QQ 消息只到这里，不再经过桥接镜像——顺手把它投进桌宠消息卡片，
+    // 否则卡片看不到 QQ 对话（以前靠桥接 POST /qq/incoming）。
+    try { petApi.mirror?.({ role: 'user', sender: '主人', text }); } catch { /* 卡片镜像失败不影响回复 */ }
     try {
       const reply = await rawChat.ask(text);
+      try { petApi.mirror?.({ role: 'assistant', text: reply }); } catch { /* 同上 */ }
       if (body.stream === true) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
         for (const chunk of openAiStreamChunks(id, model, reply)) res.write(chunk);
@@ -4228,10 +4539,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, 500, { error: { message: String(error?.message ?? error), type: 'dfy_raw_chat_error' } });
     }
   });
-  route('exact', '/dsh-surfcore/v1/models', async (req, res) => {
+  localRoute('exact', '/dsh-surfcore/v1/models', async (req, res) => {
     if (req.method !== 'GET') { json(res, 405, { error: { message: '只支持 GET' } }); return; }
     json(res, 200, { object: 'list', data: [{ id: 'dfy-fish', object: 'model', owned_by: 'dsh-dfy' }] });
   });
+  // ── QQ 桥接插件通道（AstrBot 插件 → DSH）──
+  // 入参 { key: "aiocqhttp:FriendMessage:1913962426" | "private:1913962426", text, timeoutMs }
+  // 出参 { ok, key, sessionId, reply }
+  localRoute('exact', '/dsh-surfcore/v1/qq-bridge/ask', async (req, res) => {
+    if (req.method !== 'POST') { json(res, 405, { error: { message: '只支持 POST' } }); return; }
+    const body = await readJsonBody(req);
+    const text = String(body.text ?? '').trim();
+    if (!text) { json(res, 400, { error: { message: 'text 不能为空' } }); return; }
+    const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Number(body.timeoutMs), 300_000) : undefined;
+    try {
+      const result = await qqBridgeChat.ask({
+        key: body.key ?? body.umo ?? '',
+        text,
+        timeoutMs,
+        persona: body.persona ?? '',
+        personaHash: body.personaHash ?? '',
+      });
+      json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      json(res, 502, { ok: false, error: String(error?.message ?? error), key: String(body.key ?? '') });
+    }
+  }, { tokenKind: 'bridge' });
   disposers.push(ctx.webServer.register({
     kind: 'prefix',
     path: petApi.prefix,
@@ -4257,6 +4590,162 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   try { petApi.writeHostFile(true); } catch (error) { pluginLog('[pet-api] 启动写 host.json 失败：', String(error?.message ?? error)); }
   const petHostTimer = setInterval(() => { try { petApi.writeHostFile(false); } catch {} }, 120_000);
   petHostTimer.unref?.();
+  // QQ 桥接插件的发现文件（端口漂移/令牌轮换）：启动写一次，之后每分钟对一次。
+  writeQqBridgeHostFile();
+  // DSH 换端口后，AstrBot 里那条 dfy-fish provider 的 api_base 会指向旧端口（面板会报「指向漂移」）。
+  // QQ 走桥接插件时用不到它，但面板自测/切回 provider 模式要用——启动时静默跟随一次。
+  try {
+    const routeB = astrbotApi.getRouteB();
+    const current = String(currentDshUrl() || '').replace(/\/+$/, '');
+    if (routeB.on && current) {
+      const expected = `${current}/dsh-surfcore/v1`;
+      if (String(routeB.apiBase ?? '').replace(/\/+$/, '') !== expected) {
+        astrbotApi.setRouteB(true, expected, ensureRawChatToken());
+        pluginLog(`[astrbot] 路线 B 的 api_base 已跟随 DSH 端口：${expected}（AstrBot 重启后生效）`);
+      }
+    }
+  } catch (error) {
+    pluginLog('[astrbot] 启动时校正路线 B 指向失败：', String(error?.message ?? error));
+  }
+
+  /**
+   * 把包内自带的 AstrBot 桥接插件（astrbot-plugins/astrbot_plugin_dsh_bridge）装进 AstrBot。
+   * 首次安装/升级时自动完成，用户不需要手动拷贝；幂等（内容相同就直接返回）。
+   */
+  function ensureAstrbotBridgePluginFiles() {
+    try {
+      // PLUGIN_ROOT 指向包内的 backend/；包根的 astrbot-plugins/ 在上一级
+      const srcDir = path.join(PLUGIN_ROOT, '..', 'astrbot-plugins', 'astrbot_plugin_dsh_bridge');
+      const srcMain = path.join(srcDir, 'main.py');
+      if (!fs.existsSync(srcMain)) return { ok: false, reason: 'bundled-missing' };
+      let cwd = '';
+      try { cwd = String(readUnified().config.astrbot?.cwd || '').trim(); } catch { /* 读不到就按默认目录 */ }
+      if (!cwd) cwd = path.join(os.homedir(), 'astrbot');
+      // AstrBot 没初始化时别瞎建目录：先跑 astrbot init / 或者等守护进程拉起来
+      if (!fs.existsSync(path.join(cwd, 'data', 'cmd_config.json'))) return { ok: false, reason: 'astrbot-not-initialized' };
+      const dstDir = path.join(cwd, 'data', 'plugins', 'astrbot_plugin_dsh_bridge');
+      const dstMain = path.join(dstDir, 'main.py');
+      let same = false;
+      try { same = fs.readFileSync(dstMain, 'utf8') === fs.readFileSync(srcMain, 'utf8'); } catch { same = false; }
+      if (same && fs.existsSync(path.join(dstDir, 'metadata.yaml'))) return { ok: true, changed: false, dir: dstDir };
+      fs.mkdirSync(dstDir, { recursive: true });
+      fs.copyFileSync(srcMain, dstMain);
+      const srcMeta = path.join(srcDir, 'metadata.yaml');
+      if (fs.existsSync(srcMeta)) fs.copyFileSync(srcMeta, path.join(dstDir, 'metadata.yaml'));
+      // 清旧字节码，避免 AstrBot 载入缓存的旧版本
+      try { fs.rmSync(path.join(dstDir, '__pycache__'), { recursive: true, force: true }); } catch { /* 忽略 */ }
+      return { ok: true, changed: true, dir: dstDir };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * 插件桥接模式的「自愈巡检」（每 2 分钟）：DSH 重启后这几个东西最容易掉，全部自动补。
+   *
+   *   1. SnowLuma 的 wsClients 配置（它只在账号会话启动时读一次，配置丢了不会自己回来）；
+   *   2. SnowLuma 进程（它是 QQ 登录层，没它 AstrBot 就没有 QQ 输入）；
+   *   3. AstrBot 里 dfy-fish 的 api_base（DSH 端口漂移后要跟随）。
+   *
+   * AstrBot 进程本身由 astrbotSupervisor 每 30 秒巡检，不在这里重复。
+   */
+  let bridgeHealthBusy = false;
+  async function ensureBridgePluginHealth() {
+    if (bridgeHealthBusy) return;
+    bridgeHealthBusy = true;
+    try {
+      let plugins = null;
+      try { plugins = await astrbotApi.listPlugins(); } catch { plugins = null; }
+      let astrbotStatus = null;
+      try { astrbotStatus = await astrbotSupervisor.status(); } catch { astrbotStatus = null; }
+      const bridgePlugin = Array.isArray(plugins)
+        && plugins.some((p) => p && p.name === 'astrbot_plugin_dsh_bridge' && p.enabled === true);
+
+      // 0) 首次安装/升级：把包里自带的 AstrBot 桥接插件自动装进去（用户不需要手动拷贝文件）。
+      //    注意要在「没装就 return」之前执行，否则新机器永远装不上。
+      try {
+        const installed = ensureAstrbotBridgePluginFiles();
+        if (installed.ok && installed.changed) {
+          pluginLog(`[qq-bridge] 已自动安装/更新 AstrBot 桥接插件：${installed.dir}`);
+          if (astrbotStatus?.running && astrbotStatus?.spawnedByUs) {
+            void astrbotSupervisor.restart().catch(() => {});
+            pluginLog('[qq-bridge] 已请求重启 AstrBot 以加载桥接插件（约 30 秒）');
+          } else if (astrbotStatus?.running) {
+            pluginLog('[qq-bridge] AstrBot 不是 dsh-Dfy 拉起的：请手动重启一次 AstrBot，桥接插件才会加载');
+          }
+        } else if (!installed.ok && installed.reason && installed.reason !== 'bundled-missing') {
+          pluginLog(`[qq-bridge] 自动安装桥接插件跳过：${installed.reason}`);
+        }
+      } catch (error) {
+        pluginLog('[qq-bridge] 自动安装桥接插件失败：', String(error?.message ?? error));
+      }
+      if (!bridgePlugin) return;
+
+      // 插件桥接一旦生效，内置 QQ 桥必须保持停止，否则两个大脑会双回复。
+      // 新用户默认 platforms.start.qq=true，这里自动迁移成 false 并停桥（一次，幂等）。
+      if (platformStartEnabled('qq')) {
+        try {
+          saveUnified({ platforms: { start: { qq: false } } });
+          const stopped = await stopBridge();
+          pluginLog(`[qq-bridge] 已自动停用内置 QQ 桥（插件桥接模式，避免双回复）：${stopped?.ok ? '已停' : (stopped?.error ?? '')}`);
+        } catch (error) {
+          pluginLog('[qq-bridge] 自动停用内置桥失败：', String(error?.message ?? error));
+        }
+      }
+      // 0) 首装自动化：没配过 SnowLuma 位置就自动识别写入；开启自动注入（否则要人手点「注入」）；
+      //    控制台密码存过就静默登录一次（账号列表/加号退号都不用用户再操作）。
+      try {
+        const snowCfg = readQqConfig().config?.snowluma ?? {};
+        if (!String(snowCfg.launcherPath ?? '').trim()) {
+          const found = findSnowLumaInstall();
+          if (found.ok) {
+            saveQqConfig({ snowluma: { launcherPath: found.root, allowLaunch: true } });
+            pluginLog(`[qq-bridge] 已自动识别 SnowLuma：${found.root}`);
+          }
+        }
+        enableSnowLumaAutoHook(String(readQqConfig().config?.snowluma?.launcherPath ?? ''));
+        if (snowlumaWebuiClient.hasPassword() && (await portOpen(snowLumaWebui().port))) {
+          void snowlumaWebuiClient.accounts().catch(() => {}); // 触发一次静默登录（存过密码才会成功）
+        }
+      } catch (error) {
+        pluginLog('[qq-bridge] 首装自动化失败：', String(error?.message ?? error));
+      }
+      // 1) SnowLuma 接入配置（只增补，不动用户其它网络配置）
+      try {
+        const client = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
+        if (client.changed) pluginLog('[qq-bridge] SnowLuma wsClients 配置缺失，已自动补上（重启 SnowLuma 生效）');
+      } catch (error) {
+        pluginLog('[qq-bridge] 校验 SnowLuma 接入配置失败：', String(error?.message ?? error));
+      }
+      // 2) SnowLuma 进程看门狗
+      const snowlumaUp = (await portOpen(3000)) || (await portOpen(3001));
+      if (!snowlumaUp) {
+        const launched = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+        if (launched?.ok) pluginLog(`[qq-bridge] SnowLuma 不在运行，已自动拉起：${launched.message ?? launched.error ?? ''}`);
+        else pluginLog('[qq-bridge] SnowLuma 自动拉起未成功：', String(launched?.error ?? ''));
+      }
+      // 3) dfy-fish api_base 跟随当前 DSH 端口
+      const routeB = astrbotApi.getRouteB();
+      const current = String(currentDshUrl() || '').replace(/\/+$/, '');
+      if (routeB.on && current) {
+        const expected = `${current}/dsh-surfcore/v1`;
+        if (String(routeB.apiBase ?? '').replace(/\/+$/, '') !== expected) {
+          astrbotApi.setRouteB(true, expected, ensureRawChatToken());
+          pluginLog(`[astrbot] 路线 B api_base 跟随 DSH 端口：${expected}`);
+        }
+      }
+    } catch (error) {
+      pluginLog('[qq-bridge] 自愈巡检失败：', String(error?.message ?? error));
+    } finally {
+      bridgeHealthBusy = false;
+    }
+  }
+
+  void ensureBridgePluginHealth();
+  const bridgeHealthTimer = setInterval(() => { void ensureBridgePluginHealth(); }, 120_000);
+  bridgeHealthTimer.unref?.();
+  const qqBridgeHostTimer = setInterval(() => { writeQqBridgeHostFile(); }, 60_000);
+  qqBridgeHostTimer.unref?.();
   // 目的机制（桌宠载体）：carrier=pet 时由这里每 60 秒 tick；carrier=qq 时它自己会退出。
   try { petPurpose.start(); } catch (error) { pluginLog('[pet-purpose] 启动失败：', String(error?.message ?? error)); }
 
@@ -4306,6 +4795,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
+    if (qqBridgeHostTimer) clearInterval(qqBridgeHostTimer);
+    if (bridgeHealthTimer) clearInterval(bridgeHealthTimer);
     if (typeof douyinChatWatchdog !== 'undefined') clearInterval(douyinChatWatchdog);
     try { disposeDouyinIm(); } catch {}
     try { sessionEventOff?.(); } catch {}

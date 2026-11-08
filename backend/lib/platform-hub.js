@@ -296,9 +296,17 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
     if (!profile) {
       return { ok: false, error: `没识别出当前 profile，请手动执行：dsh plugin --profile <profile> add ${cand.repo}` };
     }
+    // 安全审查（2026-11）：这里走 shell:true，参数必须严格校验，防止配置/清单被篡改后注入命令。
+    const repo = String(cand.repo ?? '');
+    if (!/^github:[\w.-]+\/[\w.-]+$/i.test(repo)) {
+      return { ok: false, error: '推荐插件地址格式不合法（只接受 github:用户/仓库）' };
+    }
+    if (!/^[\w.-]+$/.test(String(profile))) {
+      return { ok: false, error: 'profile 名称不合法' };
+    }
     log(`[platform-hub] 安装 ${cand.id} → profile ${profile}`);
     const out = await new Promise((resolve, reject) => {
-      const child = spawn('dsh', ['plugin', '--profile', profile, 'add', cand.repo], { shell: true, env: process.env });
+      const child = spawn('dsh', ['plugin', '--profile', profile, 'add', repo], { shell: true, env: process.env });
       let stdout = '';
       let stderr = '';
       const timer = setTimeout(() => { try { child.kill(); } catch {} reject(new Error('安装超时（180s），网络或源太慢，可改为手动安装')); }, INSTALL_TIMEOUT);

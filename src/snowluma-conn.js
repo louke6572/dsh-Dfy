@@ -93,6 +93,68 @@ export function readOneBotHttpTokens(homeDir) {
     .map((a) => ({ token: a.http.token, uin: a.uin, host: a.http.host, port: a.http.port, file: a.file }));
 }
 
+/**
+ * 保证 SnowLuma 的 per-account OneBot 配置里有「连 AstrBot」的出站客户端。
+ *
+ * 为什么必须由代码兜底（2026-11 实测翻车）：
+ *   AstrBot 的 aiocqhttp 是**反向 WS 服务端**（127.0.0.1:6199/ws），等 OneBot 客户端连入。
+ *   SnowLuma 能当这个客户端（networks.wsClients），但这条配置以前是手工写的；
+ *   一旦没写/写错，AstrBot 一个 QQ 事件都收不到 —— 用户看到的就是「插件装了但用不了」。
+ *   SnowLuma 只在账号会话启动时读一次配置，所以写完还要提示重启 SnowLuma。
+ *
+ * 只增补/修正名为 name 的那一条，不动用户其它网络配置；改之前留一份 .bak-astrbot。
+ */
+export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/ws', name = 'astrbot' } = {}) {
+  const result = { ok: false, changed: false, files: [], reason: '' };
+  const homes = snowLumaHomeCandidates({ cfg });
+  if (!homes.length) { result.reason = 'no-snowluma-home'; return result; }
+  const seen = new Set();
+  for (const home of homes) {
+    for (const account of readOneBotTokens(home)) {
+      if (seen.has(account.file)) continue;
+      seen.add(account.file);
+      let doc;
+      try { doc = JSON.parse(fs.readFileSync(account.file, 'utf8')); } catch { continue; }
+      doc.networks = doc.networks ?? {};
+      const list = Array.isArray(doc.networks.wsClients) ? doc.networks.wsClients : [];
+      const idx = list.findIndex((entry) => entry && entry.name === name);
+      const desired = {
+        name,
+        enabled: true,
+        url,
+        accessToken: '',
+        messageFormat: 'array',
+        reportSelfMessage: false,
+        role: 'Universal',
+        reconnectIntervalMs: 5000
+      };
+      const current = idx >= 0 ? list[idx] : null;
+      const already = current
+        && current.enabled === true
+        && String(current.url ?? '') === url
+        && String(current.role ?? 'Universal') === 'Universal'
+        && String(current.messageFormat ?? 'array') === 'array';
+      if (already) { result.files.push({ file: account.file, changed: false }); continue; }
+      if (idx >= 0) list[idx] = { ...current, ...desired };
+      else list.push(desired);
+      doc.networks.wsClients = list;
+      try {
+        const backup = `${account.file}.bak-astrbot`;
+        if (!fs.existsSync(backup)) fs.copyFileSync(account.file, backup);
+        fs.writeFileSync(account.file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+      } catch (error) {
+        result.files.push({ file: account.file, changed: false, error: String(error?.message ?? error) });
+        continue;
+      }
+      result.changed = true;
+      result.files.push({ file: account.file, changed: true });
+    }
+  }
+  result.ok = result.files.length > 0;
+  if (!result.ok) result.reason = 'no-account';
+  return result;
+}
+
 /** 试一次 get_login_info；成功返回 data，失败返回 null。 */
 async function probe(baseUrl, token, timeoutMs) {
   try {

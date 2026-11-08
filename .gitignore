@@ -10,9 +10,7 @@ config.json
 .npmrc
 .env
 state/
-pet/*.json
-pet/host-token
-pet/chat/
+pet/
 *.log
 
 # 系统
@@ -38,3 +36,7 @@ lib/__run.js
 
 # ZCode 会话产物
 .zcode/
+
+# 审查/工作文档（含个人对话记录，不入库）
+对话记录-*.md
+QQ链路对比-*.md

@@ -1,0 +1,18 @@
+name: astrbot_plugin_dsh_bridge
+display_name: DSH 大脑桥接
+short_desc: QQ 消息转给 DSH，按 QQ 会话建立 DSH 会话窗口
+desc: >-
+  把 AstrBot 收到的 QQ 消息转发给本机 DSH（dsh-Dfy 插件），由 DSH 生成回复。
+  和「OpenAI 兼容 provider」不同，这里能带上 QQ 会话标识（unified_msg_origin），
+  所以 DSH 里每段 QQ 对话都有自己的会话窗口：侧栏可见、可切模型、能看思考和上下文。
+  AstrBot 的插件链（表情包、延时、收尾等结果类插件）照常生效。
+version: 1.0.0
+author: dsh-Dfy
+repo: https://github.com/louke6572/dsh-Dfy
+astrbot_version: ">=4.11.0"
+support_platforms:
+  - aiocqhttp
+tags:
+  - DSH
+  - 桥接
+  - 会话

@@ -122,12 +122,22 @@ const runDouyin = async (name, args) => {
   throw new Error(`未知抖音工具：${name}`);
 };
 
+/** 抖音工具统一的返回包装（贴吧工具删除时漏改，导致所有抖音 MCP 工具 ReferenceError）。 */
+function douyinToolResult(result) {
+  const text = typeof result === 'string' ? result : JSON.stringify(result ?? {}, null, 2);
+  return { content: [{ type: 'text', text }] };
+}
+
+function douyinToolError(error) {
+  return { isError: true, content: [{ type: 'text', text: `抖音工具失败：${String(error?.message ?? error).slice(0, 400)}` }] };
+}
+
 server.tool(
   'douyin_status',
   '查看抖音平台状态：总开关、允许时段、今天已看多久/剩多久、专用窗口在不在、上次总结。不会打开浏览器。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_status')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_status')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -136,7 +146,7 @@ server.tool(
   '打开抖音专用 Edge 窗口（只在用户要求时用；用于扫码登录或人工操作）。不占用观看额度，不会自动开始刷。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_open')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_open')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -145,7 +155,7 @@ server.tool(
   '读取抖音当前正在看的那条：标题、作者、链接、播放进度。只读，不翻页。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_current')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_current')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -154,7 +164,7 @@ server.tool(
   '抖音划到下一条（受允许时段和每日额度约束，超了会被拒）。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_next')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_next')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -163,7 +173,7 @@ server.tool(
   '在抖音网页版搜索关键词并返回可见结果（同样受时段/额度约束）。',
   { query: z.string().describe('搜索词，最多 300 字') },
   async ({ query }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_search', { query })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_search', { query })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -172,7 +182,7 @@ server.tool(
   '让抖音按设置页的时段/额度自己刷一轮（本地循环：停留 → 下一条），不需要模型参与。',
   { maxVideos: z.number().int().positive().optional().describe('这一轮最多看几条，默认取设置页的值') },
   async ({ maxVideos }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_start', { maxVideos })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_start', { maxVideos })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -181,7 +191,7 @@ server.tool(
   '停止抖音自动观看并暂停视频（不会关掉专用窗口）。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_stop')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_stop')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -190,7 +200,7 @@ server.tool(
   '收工记录：把这次刷抖音做了什么写进「上次总结」。',
   { note: z.string().describe('这次刷抖音做了什么') },
   async ({ note }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_summary', { note })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_summary', { note })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -199,7 +209,7 @@ server.tool(
   '查看抖音看过的视频记录（本地记账，含标题、作者、链接）。',
   { limit: z.number().int().positive().optional().describe('返回条数，默认 100') },
   async ({ limit }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_history', { limit: limit ?? 100 })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_history', { limit: limit ?? 100 })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -235,7 +245,7 @@ server.tool(
         images: (item.images ?? []).map((image) => ({ file: image.file, bytes: image.bytes })),
       }));
       return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }, ...blocks] };
-    } catch (error) { return tiebaToolError(error); }
+    } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -244,7 +254,7 @@ server.tool(
   '读抖音互动通知（@我的 / 评论我的作品 / 点赞 / 关注 / 回复我的评论），只读，不标记已读。',
   { count: z.number().int().positive().optional().describe('每组读取条数，默认 20') },
   async ({ count }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_notices', { count })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_notices', { count })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -258,7 +268,7 @@ server.tool(
     commentMax: z.number().int().positive().optional().describe('热评条数，默认 8'),
   },
   async ({ awemeId, url, danmakuLimit, commentMax }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_debrief', { awemeId, url, danmakuLimit, commentMax })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_debrief', { awemeId, url, danmakuLimit, commentMax })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -267,7 +277,7 @@ server.tool(
   '查看抖音群聊/私信的许可名单、自动回复是否在跑、各会话状态和最近事件。不会打开浏览器。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_status')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_status')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -276,7 +286,7 @@ server.tool(
   '列出抖音网页的会话（个人/群聊），用于让主人勾选允许的会话。会打开/使用专用窗口的私信页。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_contacts')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_contacts')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -288,7 +298,7 @@ server.tool(
     mentionNames: z.array(z.string()).optional().describe('群聊里叫到这些昵称才回，默认「大肥鱼」'),
   },
   async ({ recipientIds, mentionNames }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_configure', { recipientIds, mentionNames })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_configure', { recipientIds, mentionNames })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -297,7 +307,7 @@ server.tool(
   '按已保存的许可名单启动自动回复：个人会话回新消息；群聊只在被@或叫到昵称时回。需要主人先打开开关。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_start')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_start')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -306,7 +316,7 @@ server.tool(
   '停止抖音群聊/私信自动回复（保留许可名单）。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_stop')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_stop')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -315,7 +325,7 @@ server.tool(
   '只读一个许可会话（个人或群聊）的最近消息。recipientId 来自 douyin_chat_contacts。',
   { recipientId: z.string().describe('会话 id') },
   async ({ recipientId }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_read', { recipientId })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_read', { recipientId })); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -324,7 +334,7 @@ server.tool(
   '列出抖音群聊/私信可用的 DSH 模型（提供商 + 模型），以及当前聊天用的是哪个（空 = 跟随 DSH 默认模型）。',
   {},
   async () => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_models')); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_models')); } catch (error) { return douyinToolError(error); }
   }
 );
 
@@ -336,7 +346,7 @@ server.tool(
     model: z.string().describe('模型 id；空字符串表示跟随 DSH 默认'),
   },
   async ({ provider, model }) => {
-    try { return tiebaToolResult(await runDouyin('douyin_chat_set_model', { provider, model })); } catch (error) { return tiebaToolError(error); }
+    try { return douyinToolResult(await runDouyin('douyin_chat_set_model', { provider, model })); } catch (error) { return douyinToolError(error); }
   }
 );
 

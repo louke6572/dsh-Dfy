@@ -20,8 +20,18 @@ import { readUnified } from './store.js';
 
 const REPLY_TIMEOUT_MS = 180_000;
 
-export function createRawChat({ ctx, log = () => {} } = {}) {
+export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {}) {
   const SESSION_ID = 'dfy-astrbot';
+  /** DSH 插件服务：ctx.sessionController 不是属性，必须走 ctx.get(name)（2026-11 实测）。 */
+  function service(name) {
+    try {
+      return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name];
+    } catch { return undefined; }
+  }
+  /** 最近一次成功写入的模型，避免每条消息都打一行日志。 */
+  let appliedModelKey = '';
+  /** sessionController 的 Remote 方法签名是 (request, signal)，缺 signal 会 TypeError。 */
+  const CONTROLLER_SIGNAL = new AbortController().signal;
   /** sessionId -> Set<{collector, resolve, reject, timer}> */
   const pending = new Map();
   /** 会话级串行锁：同一会话并发灌消息会互相抢 turn，排队逐条来 */
@@ -29,8 +39,22 @@ export function createRawChat({ ctx, log = () => {} } = {}) {
   let subscribed = false;
   /** 桥接同款的 DSH Web API 客户端：prompt 走 HTTP（进程内调用的事件序列化有坑） */
   let apiClient = null;
-  /** qq config 里的 dsh.baseUrl 常是旧实例的残值：探测优先，连不上再发现，兜底 3080。 */
+  /** 当前 DSH 的 web 服务地址（插件自己就挂在这个服务里，最可靠，不靠端口猜测）。 */
+  function localBaseUrl() {
+    try {
+      const ws = typeof ctx?.get === 'function' ? ctx.get('webServer') : null;
+      if (ws?.port) return `${ws.protocol || 'http:'}//127.0.0.1:${ws.port}`;
+    } catch { /* 忽略 */ }
+    return '';
+  }
+
+  /** qq config 里的 dsh.baseUrl 常是旧实例的残值：先信插件自己的 webServer，再探测，兜底 3080。 */
   async function resolveBaseUrl(dsh) {
+    // 2026-11 实测坑：qq config 里 dsh.baseUrl=http://127.0.0.1:8326，那是本机另一个
+    // OpenAI 网关（也回 401），probeDshBaseUrl 把 401 当成「DSH 在」→ 选错地址 →
+    // session/prompt 全部 401。插件自己就在 DSH 的 webServer 里，直接用它。
+    const local = localBaseUrl();
+    if (local) return local;
     const stored = String(dsh.baseUrl ?? '');
     if (stored && await probeDshBaseUrl(stored)) return stored;
     if (await probeDshBaseUrl('http://127.0.0.1:3080')) return 'http://127.0.0.1:3080';
@@ -93,32 +117,69 @@ export function createRawChat({ ctx, log = () => {} } = {}) {
     return run;
   }
 
-  /** 会话存在性：inspect 不到就建（带 qq-chat 预设 = 鱼的人设来源）。 */
-  async function ensureSession() {
+  /**
+   * 会话模型：**跟 DSH 当前默认模型走**，不是 dsh-Dfy 自己那份全局模型选择。
+   *
+   * 2026-11 实测原因：以前用 readUnified().config.model（zipu/glm-5.3-flash）给会话设模型，
+   * 而用户主会话用的是 deepseek-account/deepseek-flash —— 于是 QQ 里那条鱼听起来
+   * 「不像 DSH 里的她」。resolveModel() 由 index.js 注入（读 agentDefaultModel）。
+   */
+  async function applySessionModel(controller) {
     try {
-      await ctx.sessionController.inspect(SESSION_ID);
-      return true;
-    } catch { /* 不存在，走创建 */ }
-    try {
-      const cwd = path.join(STATE_DIR, 'dfy-astrbot');
-      fs.mkdirSync(cwd, { recursive: true });
-      await ctx.sessionController.create({ sessionId: SESSION_ID, cwd, agentPreset: 'qq-chat' });
-      log(`[raw-chat] 会话 ${SESSION_ID} 已创建（preset qq-chat）`);
-      // 新会话没有模型会被 prompt rejected：把 DSH 全局模型设给它（HTTP RPC）
-      try {
-        const m = readUnified().config.model ?? {};
-        if (m.provider && m.model) {
-          await api().callUnary('session/selectModel', { sessionId: SESSION_ID, provider: m.provider, model: m.model });
-          log(`[raw-chat] 已设模型 ${m.provider}/${m.model}`);
-        }
-      } catch (error) {
-        log('[raw-chat] 设模型失败：', String(error?.message ?? error).slice(0, 160));
+      const preferred = (() => { try { return resolveModel?.() ?? null; } catch { return null; } })();
+      const fallback = readUnified().config.model ?? {};
+      const provider = String(preferred?.provider ?? fallback.provider ?? '');
+      const model = String(preferred?.model ?? fallback.model ?? '');
+      if (!provider || !model) return;
+      const effort = String(preferred?.reasoningEffort ?? fallback.reasoningEffort ?? '');
+      const key = `${provider}/${model}${effort ? `@${effort}` : ''}`;
+      if (key === appliedModelKey) return;
+      const payload = { sessionId: SESSION_ID, provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
+      if (controller && typeof controller.selectModel === 'function') {
+        await controller.selectModel(payload);
+      } else {
+        const client = await api();
+        await client.callUnary('session/selectModel', payload);
       }
-      return true;
+      appliedModelKey = key;
+      log(`[raw-chat] 会话模型 → ${key}（跟 DSH 默认模型）`);
     } catch (error) {
-      log('[raw-chat] 建会话失败：', String(error?.message ?? error));
-      return false;
+      log('[raw-chat] 设模型失败：', String(error?.message ?? error).slice(0, 160));
     }
+  }
+
+  /**
+   * 会话存在性：用 sessionController 的 state/create（正确方法）。
+   *
+   * 2026-11 实测坑：以前写 `ctx.sessionController.inspect(...)` —— ctx 上根本没有这个属性，
+   * 于是每条消息都走 create() 建出**一个空的随机会话**（侧栏里堆了一串 blank 会话），
+   * 而真正的 dfy-astrbot 会话要靠 HTTP prompt 才被建出来。现在：
+   *   · controller.state 探盘上会话；没有才 create（带 qq-chat 预设 = 鱼的人设来源）；
+   *   · 不依赖 inspect（Remote 没暴露它）。
+   */
+  async function ensureSession() {
+    const controller = service('sessionController');
+    if (controller && typeof controller.state === 'function' && typeof controller.create === 'function') {
+      try {
+        await controller.state({ sessionId: SESSION_ID });
+      } catch {
+        const cwd = path.join(STATE_DIR, 'dfy-astrbot');
+        try { fs.mkdirSync(cwd, { recursive: true }); } catch { /* 目录失败不影响会话 */ }
+        try {
+          await controller.create({ sessionId: SESSION_ID, cwd, agentPreset: 'qq-chat' });
+          log(`[raw-chat] 会话 ${SESSION_ID} 已创建（preset qq-chat）`);
+        } catch (error) {
+          // 已存在但 state 读不到：再探一次，仍然不行才报错。
+          try { await controller.state({ sessionId: SESSION_ID }); }
+          catch { log('[raw-chat] 建会话失败：', String(error?.message ?? error)); return false; }
+        }
+      }
+      await applySessionModel(controller);
+      return true;
+    }
+    // 兜底：老版本 DSH 没有 sessionController 时，只能靠 HTTP RPC 设模型。
+    await applySessionModel(null);
+    return true;
   }
 
   async function doAsk(text, timeoutMs) {
@@ -145,7 +206,10 @@ export function createRawChat({ ctx, log = () => {} } = {}) {
     }, timeoutMs);
     try {
       // prompt 走桥接同款 HTTP RPC（进程内直调会让 inbox 事件带上不可序列化对象，session 落盘直接抛错）
-      await api().sessions.prompt({ sessionId: SESSION_ID, mode: 'queue', content: [{ type: 'text', text: content }] });
+      // api() 是 async：先 await 拿到客户端，再取 .sessions（漏 await 会报
+      // "Cannot read properties of undefined (reading 'prompt')"）。
+      const client = await api();
+      await client.sessions.prompt({ sessionId: SESSION_ID, mode: 'queue', content: [{ type: 'text', text: content }] });
     } catch (error) {
       const reason = String(error?.details?.reason ?? error?.message ?? error);
       settle(w, { ok: false, error: `灌消息失败：${reason.slice(0, 260)}` });

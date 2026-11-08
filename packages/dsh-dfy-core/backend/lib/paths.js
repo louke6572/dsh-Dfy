@@ -180,7 +180,7 @@ export function ensureDirs() {
   migrateLegacyData();
   // DATA_ROOT / QQ_STATE_DIR / QQ_PERSONA_DIR / PET_DATA_DIR 都是新的可写数据根；
   // index.js 启动时也会调这里，标准 DSH 安装靠它把数据目录建出来。
-  for (const dir of [STATE_DIR, BACKUP_DIR, MEMORY_DIR, DATA_ROOT, QQ_STATE_DIR, QQ_PERSONA_DIR, PET_DATA_DIR, BILI_DIR, TIEBA_DIR]) {
+  for (const dir of [STATE_DIR, BACKUP_DIR, MEMORY_DIR, DATA_ROOT, QQ_STATE_DIR, QQ_PERSONA_DIR, PET_DATA_DIR, BILI_DIR]) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   }
 }

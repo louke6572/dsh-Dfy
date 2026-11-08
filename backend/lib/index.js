@@ -250,7 +250,8 @@ export function apply(ctx) {
   const platformHub = createPlatformHub({ selfName: 'dsh-dfy', log: pluginLog });
   // AstrBot 网关守护：打开 DSH 自动拉起，不用手动启动。
   const astrbotSupervisor = createAstrbotSupervisor({ log: pluginLog });
-  astrbotSupervisor.start();
+  // 内置版默认不拉起 AstrBot（省内存）；切到 AstrBot 版时再启动。
+  if (readQqRuntimeMode() === 'astrbot') astrbotSupervisor.start();
   // AstrBot 面板 API（减法版）：插件列表/启停/安装/卸载，JWT 用它自己配置里的 secret 签。
   const astrbotApi = createAstrbotApi({ log: pluginLog });
   // 路线 B 路口：把 DSH 会话暴露成 OpenAI 兼容对话端点，AstrBot 的「OpenAI API 兼容」provider 指到这里。
@@ -1055,7 +1056,7 @@ export function apply(ctx) {
       const mode = String(readUnified().config.qqRuntime ?? '').trim();
       if (mode === 'builtin' || mode === 'astrbot') return mode;
     } catch { /* 读不到用默认 */ }
-    return 'astrbot';
+    return 'builtin';
   }
 
   function execQuiet(command, args, options = {}) {
@@ -1104,6 +1105,19 @@ export function apply(ctx) {
 
   async function setQqRuntimeMode(mode) {
     const target = mode === 'builtin' ? 'builtin' : 'astrbot';
+    // 已经在这个模式：只补齐组件，不要为了幂等操作再重启一遍 SnowLuma。
+    if (readQqRuntimeMode() === target) {
+      try {
+        if (target === 'builtin') {
+          const st = await bridgeStatus();
+          if (!st.running) await startBridge({ dshWebUrl: currentDshUrl() });
+        } else {
+          const st = await astrbotSupervisor.status();
+          if (!st.running) await astrbotSupervisor.start();
+        }
+      } catch { /* 补组件失败不影响返回 */ }
+      return { ok: true, mode: target, unchanged: true };
+    }
     saveUnified({ qqRuntime: target });
     if (target === 'builtin') {
       saveUnified({ modules: { qq: true }, platforms: { start: { qq: true } } });

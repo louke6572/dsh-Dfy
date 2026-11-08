@@ -3989,9 +3989,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/astrbot/config`) {
       if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
       const body = await readJsonBody(req);
-      const r = await astrbotSupervisor.saveProviderKey(body.apiKey);
+      const pasted = String(body.apiKey ?? '').trim();
+      const key = pasted || String(process.env.DEEPSEEK_API_KEY ?? '').trim();
+      if (!key) { json(res, 200, { ok: false, error: '没有可用的 key：粘贴一个，或在环境变量设置 DEEPSEEK_API_KEY' }); return; }
+      const r = await astrbotSupervisor.saveProviderKey(key);
       if (r.ok && r.needRestart) await astrbotSupervisor.restart();
-      json(res, 200, r);
+      json(res, 200, { ...r, auto: !pasted });
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/action`) {

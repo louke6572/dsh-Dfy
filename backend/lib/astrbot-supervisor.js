@@ -187,7 +187,7 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
     if (!fs.existsSync(file)) return { ok: false, error: `找不到 AstrBot 配置：${file}` };
     let conf;
     try {
-      conf = JSON.parse(fs.readFileSync(file, 'utf8'));
+      conf = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
     } catch (error) {
       return { ok: false, error: `AstrBot 配置解析失败：${String(error?.message ?? error)}` };
     }

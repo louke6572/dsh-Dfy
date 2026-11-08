@@ -12,6 +12,7 @@
  * 桌宠从 ~/.dsh/surfcore/pet/host.json 发现 baseUrl + token；DSH 端口漂移时
  * 插件会重写这个文件（每 2 分钟一次），桌宠重连时会重新读。
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { contentTypeRejection, isLoopbackReq, json, readBody, sameOrigin, safeEqual } from './http-guard.js';
@@ -71,19 +72,44 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
     }
   }
 
+  // 音频 URL 不能带自定义头（浏览器 <audio> 标签），但也不该把主令牌放进 URL：
+  // 改为每次合成发一个短时效音频令牌（10 分钟），只对 /audio/ 生效（安全审查 M2）。
+  const audioTokens = new Map();
+  const AUDIO_TOKEN_TTL_MS = 10 * 60_000;
+
+  function issueAudioToken(key) {
+    const at = crypto.randomBytes(18).toString('base64url');
+    const now = Date.now();
+    if (audioTokens.size > 200) {
+      for (const [t, rec] of audioTokens) if (rec.expiresAt < now) audioTokens.delete(t);
+    }
+    audioTokens.set(at, { key, expiresAt: now + AUDIO_TOKEN_TTL_MS });
+    return at;
+  }
+
+  function readAudioToken(value) {
+    const rec = audioTokens.get(String(value ?? ''));
+    if (!rec || rec.expiresAt < Date.now()) return '';
+    return rec.key;
+  }
+
   function audioUrlFor(key) {
     const safe = String(key ?? '').replace(/[^a-f0-9]/gi, '');
     if (!safe) return '';
-    return `${API_PREFIX}/audio/${safe}.wav?token=${encodeURIComponent(token())}`;
+    return `${API_PREFIX}/audio/${safe}.wav?at=${encodeURIComponent(issueAudioToken(safe))}`;
   }
 
   function authOk(req, url) {
     const header = String(req.headers['x-pet-token'] ?? '');
-    const query = String(url?.searchParams?.get('token') ?? '');
     const expected = token();
     if (!expected) return false;
     if (header && safeEqual(header, expected)) return true;
-    if (query && safeEqual(query, expected)) return true;
+    // 仅音频路由接受 URL 里的短时效令牌（<audio> 无法带 x-pet-token 头）
+    const pathname = String(url?.pathname ?? '');
+    if (pathname.startsWith(`${API_PREFIX}/audio/`) || pathname.includes('/audio/')) {
+      const at = String(url?.searchParams?.get('at') ?? '');
+      if (at && readAudioToken(at)) return true;
+    }
     return false;
   }
 
@@ -390,6 +416,12 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
     }
     if (req.method === 'GET' && suffix.startsWith('/audio/')) {
       const key = suffix.slice('/audio/'.length).replace(/\.(wav|mp3)$/i, '');
+      // 音频令牌绑定 key：令牌里记录的 key 必须和请求路径一致（防止拿一个令牌读全部音频）
+      const at = String(url?.searchParams?.get('at') ?? '');
+      if (at && readAudioToken(at) && readAudioToken(at) !== key) {
+        json(res, 403, { ok: false, error: '音频令牌与文件不匹配' });
+        return;
+      }
       const audio = chat.readAudio(key);
       if (!audio) { json(res, 404, { ok: false, error: '音频不存在或已过期' }); return; }
       try {

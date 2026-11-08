@@ -90,6 +90,7 @@ import { synthesizeEdgeToFile } from '../../src/voice-edge-tts.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../src/gate-events.js';
 import { normalizeAllowlist } from '../../src/allowlist.js';
+import { hardenFile } from '../../src/state-acl.mjs';
 import { createPetService } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
@@ -940,6 +941,27 @@ export function apply(ctx) {
   };
 
   const disposers = [];
+  // 本机凭据文件收紧 ACL（Windows 默认给 Users/Authenticated Users 读权限）。
+  // 只处理少数关键文件，避免 /T 全盘扫描拖慢启动；失败不阻塞（诊断页会提示）。
+  function hardenCredentialFiles() {
+    const targets = [
+      path.join(STATE_DIR, 'qq', 'config.json'),
+      path.join(STATE_DIR, 'config.json'),
+      path.join(STATE_DIR, 'pet', 'host.json'),
+      path.join(STATE_DIR, 'astrbot', 'raw-chat-token'),
+      path.join(STATE_DIR, 'astrbot', 'bridge-token'),
+      path.join(STATE_DIR, 'astrbot', 'dsh-bridge.json'),
+    ];
+    for (const target of targets) {
+      try {
+        if (!fs.existsSync(target)) continue;
+        const result = hardenFile(target);
+        if (!result.ok) pluginLog('[acl] 凭据文件收紧失败：', `${target} — ${result.detail}`);
+      } catch (error) {
+        pluginLog('[acl] 凭据文件收紧异常：', `${target} — ${String(error?.message ?? error)}`);
+      }
+    }
+  }
   /** 鉴权服务缺失只告警一次，避免刷日志。 */
   let connMissingWarned = false;
   function route(kind, pathname, handler) {
@@ -4592,6 +4614,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   petHostTimer.unref?.();
   // QQ 桥接插件的发现文件（端口漂移/令牌轮换）：启动写一次，之后每分钟对一次。
   writeQqBridgeHostFile();
+  setTimeout(() => { try { hardenCredentialFiles(); } catch {} }, 3000).unref?.();
   // DSH 换端口后，AstrBot 里那条 dfy-fish provider 的 api_base 会指向旧端口（面板会报「指向漂移」）。
   // QQ 走桥接插件时用不到它，但面板自测/切回 provider 模式要用——启动时静默跟随一次。
   try {

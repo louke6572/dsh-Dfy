@@ -13,9 +13,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readUnified } from './store.js';
 
+const execFileAsync = promisify(execFile);
 const CALL_TIMEOUT = 120_000;
+const CHAT_TIMEOUT = 120_000;
 
 function readAstrbotConfig(cfg) {
   const cwd = cfg.cwd || path.join(os.homedir(), 'astrbot');
@@ -37,12 +41,12 @@ function signDashboardToken(dashboardConf) {
   return `${header}.${payload}.${sig}`;
 }
 
-async function callApi(cfg, method, apiPath, body) {
+async function callApi(cfg, method, apiPath, body, prefix = '/api/v1') {
   const conf = readAstrbotConfig(cfg);
   const token = signDashboardToken(conf.dashboard ?? {});
   let res;
   try {
-    res = await fetch(`http://127.0.0.1:${cfg.port}/api/v1${apiPath}`, {
+    res = await fetch(`http://127.0.0.1:${cfg.port}${prefix}${apiPath}`, {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -68,6 +72,7 @@ async function callApi(cfg, method, apiPath, body) {
 }
 
 export function createAstrbotApi({ log = () => {} } = {}) {
+  const chatState = { sessionId: '' };
   function cfg() {
     return readUnified().config.astrbot ?? { enabled: true, cwd: '', exe: '', port: 6185 };
   }
@@ -150,5 +155,74 @@ export function createAstrbotApi({ log = () => {} } = {}) {
       fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
       return { ok: true, needRestart: true };
     },
+
+    /**
+     * QQ 是否真的连上了大脑：看本机 6199 端口有没有 ESTABLISHED 连接
+     * （SnowLuma 的 wsClients 连入）。比任何配置都诚实。
+     */
+    async isQqConnected() {
+      try {
+        const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp'], { timeout: 8000 });
+        return stdout.split(/\r?\n/).some((l) => l.includes(':6199 ') && /ESTABLISHED/i.test(l));
+      } catch {
+        return false;
+      }
+    },
+
+    /** 傻瓜式对话测试：发一句话，聚合流式回复返回纯文本。 */
+    async chatTest(text) {
+      return chatTestImpl(cfg(), text, chatState, log);
+    },
   };
 }
+
+/** 对话测试实现：webchat 会话 + /api/v1/send（JSON 或 SSE 都兜住），聚合纯文本回复。 */
+async function chatTestImpl(cfg, text, state, log) {
+  const message = String(text ?? '').trim();
+  if (!message) throw new Error('先输入一句话');
+  if (!state.sessionId) {
+    // 旧版会话路由挂在 /api/chat（不是 /api/v1）
+    const r = await callApi(cfg, 'GET', '/new_session?platform_id=webchat', undefined, '/api/chat');
+    state.sessionId = String(r?.session_id ?? r?.data?.session_id ?? '');
+    if (!state.sessionId) throw new Error('拿不到会话 id（AstrBot 版本变了？）');
+    log(`[astrbot] 对话测试会话：${state.sessionId}`);
+  }
+  const res = await fetch(`http://127.0.0.1:${cfg.port}/api/chat/send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${signDashboardToken(readAstrbotConfig(cfg).dashboard ?? {})}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ message, session_id: state.sessionId }),
+    signal: AbortSignal.timeout(CHAT_TIMEOUT),
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    let msg = raw.slice(0, 300);
+    try { msg = JSON.parse(raw)?.message ?? msg; } catch {}
+    throw new Error(`发送失败（HTTP ${res.status}）：${msg}`);
+  }
+  // 响应是 SSE 帧：回复文本在 type:"plain" 的 data 里（实测帧型 session_id/user_message_saved/run_started/plain/message_saved/end）。
+  let reply = '';
+  if (contentType.includes('event-stream') || raw.startsWith('data:') || raw.includes('\ndata:')) {
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const j = JSON.parse(payload);
+        if (j?.type === 'plain' && typeof j.data === 'string') reply += j.data;
+      } catch { /* 非 JSON 帧忽略 */ }
+    }
+  } else {
+    try {
+      const j = JSON.parse(raw);
+      const d = j?.data ?? j;
+      reply = typeof (d?.message_chain ?? d?.reply ?? d?.text) === 'string' ? (d.message_chain ?? d.reply ?? d.text) : '';
+    } catch { /* 保持空 */ }
+  }
+  reply = reply.trim();
+  if (!reply) throw new Error('大脑没回话——多半是模型 key 还没配（机器人配置里保存一次就好）');
+  return { reply };
+}
+

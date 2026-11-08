@@ -4006,8 +4006,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/panel`) {
-      try { json(res, 200, { ok: true, plugins: await astrbotApi.listPlugins() }); }
-      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [] }); }
+      try {
+        const [plugins, qqConnected] = await Promise.all([astrbotApi.listPlugins(), astrbotApi.isQqConnected()]);
+        json(res, 200, { ok: true, plugins, qqConnected });
+      } catch (error) {
+        json(res, 200, { ok: false, error: String(error?.message ?? error), plugins: [], qqConnected: false });
+      }
+      return;
+    }
+    if (pathname === `${API_PREFIX}/astrbot/chat-test`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try { json(res, 200, { ok: true, ...(await astrbotApi.chatTest(body.text)) }); }
+      catch (error) { json(res, 200, { ok: false, error: String(error?.message ?? error) }); }
       return;
     }
     if (pathname === `${API_PREFIX}/astrbot/plugins/install`) {

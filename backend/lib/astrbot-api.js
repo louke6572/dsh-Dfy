@@ -109,6 +109,7 @@ async function callApi(cfg, method, apiPath, body, prefix = '/api/v1') {
 
 export function createAstrbotApi({ log = () => {} } = {}) {
   const chatState = { sessionId: '' };
+  let qqConnectedCache = null;
   function cfg() {
     return readUnified().config.astrbot ?? { enabled: true, cwd: '', exe: '', port: 6185 };
   }
@@ -361,12 +362,18 @@ export function createAstrbotApi({ log = () => {} } = {}) {
      * （SnowLuma 的 wsClients 连入）。比任何配置都诚实。
      */
     async isQqConnected() {
+      // netstat 在 Windows 上一次 100ms~1s；overview 与 87 页高频轮询，缓存 10 秒。
+      const now = Date.now();
+      if (qqConnectedCache && now - qqConnectedCache.at < 10_000) return qqConnectedCache.value;
+      let value = false;
       try {
         const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp'], { timeout: 8000 });
-        return stdout.split(/\r?\n/).some((l) => l.includes(':6199 ') && /ESTABLISHED/i.test(l));
+        value = stdout.split(/\r?\n/).some((l) => l.includes(':6199 ') && /ESTABLISHED/i.test(l));
       } catch {
-        return false;
+        value = false;
       }
+      qqConnectedCache = { at: now, value };
+      return value;
     },
 
     /** 傻瓜式对话测试：发一句话，聚合流式回复返回纯文本。 */

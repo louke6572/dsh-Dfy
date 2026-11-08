@@ -21,7 +21,7 @@ import { NodeApiClient, createTurnCollector, discoverDshLaunchToken } from '../.
 import { STATE_DIR } from './paths.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
-const PREFERRED_PRESETS = ['qq-chat-v2', 'qq-chat'];
+const PREFERRED_PRESETS = ['qq-chat', 'qq-chat-v2'];
 /** 并发上限：群里被刷屏时不要同时开一堆模型回合（安全审查 M4）。 */
 const MAX_CONCURRENT = 3;
 const MAX_QUEUE = 20;

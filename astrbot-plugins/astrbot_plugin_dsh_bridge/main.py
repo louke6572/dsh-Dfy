@@ -139,6 +139,13 @@ class DshBridge(Star):
         except Exception:
             event.call_llm = False
         logger.debug("[dsh-bridge] 收到 QQ 消息 → DSH")
+        # 等待 DSH 想完再回：先让 QQ 侧显示「正在输入」，明显降低体感延迟
+        try:
+            typing = getattr(event, "send_typing", None)
+            if callable(typing):
+                await typing()
+        except Exception:
+            pass
         reply = await self._ask_dsh(umo, text)
         if reply:
             yield event.plain_result(reply)

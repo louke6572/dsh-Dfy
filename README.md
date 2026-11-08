@@ -239,7 +239,6 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是同一套配置：
 | `$DSH_HOME/surfcore/qq/pet/` | 桌宠 host.json、QQ 消息镜像、语音数据 |
 | `$DSH_HOME/surfcore/config.json` | B站 / 合体层配置（含凭据，仅本机） |
 | `$DSH_HOME/surfcore/memory/` | 记忆卡与注入块（已脱敏） |
-| `$DSH_HOME/surfcore/tieba/` | 贴吧登录凭据（BDUSS，0600）、心跳状态、观看记录与行为摘要 |
 | `$DSH_HOME/.dshw-usage.json` | 记账账本与用量 |
 | `$DSH_HOME/.dshw-bubble.json` | 泡泡序列与模块库 |
 | 旧 clone 的仓库根 `config.json` / `state/` / `pet/` | 旧布局数据（迁移后只读保留，不再写入） |

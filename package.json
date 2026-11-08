@@ -4,6 +4,9 @@
   "displayName": "dsh-Dfy",
   "description": "QQ × B站 × 桌宠一体化插件：统一设置窗口、小鲸鱼余额挂件、106 段透明动画桌宠、QQ 消息卡与双向脱敏记忆。",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22.13.0",
     "dsh": ">=0.2.1-rc.2"
@@ -33,6 +36,7 @@
     "@snowluma/mcp": "^1.14.20",
     "@snowluma/sdk": "^1.14.20",
     "douyin-im": "^1.1.0",
+    "dsh-dfy-core": "file:packages/dsh-dfy-core",
     "edge-tts": "^1.0.1",
     "js-yaml": "^4.3.2",
     "playwright-core": "^1.65.0",

@@ -20,7 +20,7 @@ import { assertSafeOutput, normalizeText, sanitizeText } from './privacy.js';
 import { backupFile, clone, readJson, writeJsonAtomic, writeTextAtomic } from './store.js';
 
 const FORMAT = 1;
-const PLATFORM_LABELS = { qq: 'QQ', bili: 'B站', tieba: '贴吧' };
+const PLATFORM_LABELS = { qq: 'QQ', bili: 'B站' };
 
 export const DEFAULT_ALIGN_STATE = {
   version: FORMAT,
@@ -89,7 +89,7 @@ export function readAlignState() {
 function normalizeCandidate(candidate) {
   if (!candidate || typeof candidate !== 'object') return null;
   const platform = String(candidate.platform ?? '');
-  if (!['qq', 'bili', 'tieba'].includes(platform)) return null;
+  if (!['qq', 'bili'].includes(platform)) return null;
   const identity = normalizeIdentity(platform, candidate.identity);
   if (!identity) return null;
   const counterpart = normalizeIdentity(candidate.counterpartPlatform, candidate.counterpart);
@@ -387,7 +387,6 @@ export function stats() {
     byPlatform: {
       qq: state.links.filter((l) => l.identities.qq).length,
       bili: state.links.filter((l) => l.identities.bili).length,
-      tieba: state.links.filter((l) => l.identities.tieba).length,
     },
     updatedAt: state.updatedAt,
   };

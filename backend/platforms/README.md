@@ -1,11 +1,11 @@
-# 平台接入层（为贴吧预留；微博明确不做）
+# 平台接入层（微博明确不做；贴吧已由 dsh-tieba-dive 插件替代）
 
 平台适配器接口在 `lib/platforms.js`：
 
 ```js
 {
-  id: 'tieba',
-  name: '贴吧',
+  id: 'douyin',
+  name: '抖音',
   version: '1.0.0',
   status: 'active',            // active | planned | disabled
   capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block'],
@@ -16,12 +16,7 @@
 }
 ```
 
-内置：`qq`、`bili`、`tieba`（tieba 使用 `BDUSS` 登录，网络层走 curl + 手机版/app 接口）。
-
-> 贴吧的浏览 / 发帖 / 评论 / 点赞工具链在 `backend/tools/tieba.mjs`；
-> 同时以 MCP 工具暴露（`tieba_feed` / `tieba_thread` / `tieba_reply` / `tieba_like` / `tieba_sign` …，
-> 见 `src/mcp-host-server.js`），QQ / 网页会话可直接调用，走已登录的 BDUSS。
-> 设置页在「平台 → 贴吧」，配置写在合体层 `config.json` 的 `tieba` 字段。
+内置：`qq`、`bili`、`douyin`。
 
 > 2026-10-23 用户明确：微博不做，`weibo` 占位连同 `platforms/weibo/manifest.json` 一起移除（备份 `_backups/weibo-platform-removed-20261023/`）。
 
@@ -29,10 +24,10 @@
 
 - 记忆同步不是“QQ → B站”写死，而是“源平台 → 目标平台”的公开内容管道；隐私闸门在
   `lib/privacy.js` 统一执行，任何新平台都必须过同一道闸。
-- 身份对齐的存储结构是 `{ identities: { qq, bili, tieba } }`，新平台只是多一个键。
+- 身份对齐的存储结构是 `{ identities: { qq, bili, … } }`，新平台只是多一个键。
 - 设置窗口「扩展 / 平台」页会自动列出注册表里的平台，不需要改 UI 主流程。
 
-## 接贴吧（或以后的新平台）时要补的
+## 接新平台时要补的
 
 1. 一个 adapter（可以放在 `platforms/<id>/`，由 `PlatformRegistry.loadLocal()` 加载；
    也可以由扩展调用 `api.registerPlatform()` 注册）。

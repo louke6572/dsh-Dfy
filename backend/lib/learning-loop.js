@@ -1,12 +1,12 @@
 /**
- * 自我学习回路：贴吧 / B站 / 抖音 → 经历 + 兴趣 + 自动近况。
+ * 自我学习回路：B站 / 抖音 → 经历 + 兴趣 + 自动近况。
  *
  * 为什么这样做（而不是继续改提示词）：
  *   提示词是死的，看完内容就忘；这里把「她最近自己看到的」沉淀成可复用的状态，
  *   再注入到 QQ / 桌宠 / 抖音的提示词里，她下次说话就有具体的生活可提。
  *
  * 数据流：
- *   观看记录（三平台各读自己的 jsonl，按时间游标只取新增）
+ *   观看记录（各平台各读自己的 jsonl，按时间游标只取新增）
  *     → 一次低强度模型调用提炼：经历（她的口吻）/ 兴趣 / 近况（≤300 字）
  *     → 写 learning-profile.json + persona.daily.auto.md（可回滚）
  *
@@ -17,7 +17,6 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { readTiebaViewHistory, tiebaAction } from './tieba.js';
 import { readWatchHistory } from '../tools/lib/watch-history.mjs';
 import { readDouyinHistory, douyinComments, douyinStatus } from './douyin.js';
 import { readUnified } from './store.js';
@@ -60,26 +59,10 @@ function short(value, max) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-/** 三个平台各自的历史 → 统一结构（只取游标之后的新内容）。 */
+/** 各平台的历史 → 统一结构（只取游标之后的新内容）。 */
 function collectSources(config, cursors = {}, now = Date.now()) {
   const cutoff = now - config.days * 86400_000;
   const items = [];
-  try {
-    const tieba = readTiebaViewHistory({ limit: config.maxItems, days: config.days, now });
-    for (const row of tieba.items ?? []) {
-      const at = whenAt(row.at);
-      if (at < cutoff || at <= whenAt(cursors.tieba)) continue;
-      items.push({
-        platform: 'tieba',
-        at,
-        threadId: String(row.threadId || ''),
-        title: short(row.title, 120),
-        detail: short(row.abstract, 160),
-        meta: [row.mode === 'read' ? '认真看' : '扫看', row.replyNum ? `回复${row.replyNum}` : '', row.agreeNum ? `赞${row.agreeNum}` : '']
-          .filter(Boolean).join(' · '),
-      });
-    }
-  } catch { /* 贴吧没登录/没记录 */ }
   try {
     const bili = readWatchHistory({ limit: config.maxItems, days: config.days, now });
     for (const row of bili.items ?? []) {
@@ -116,7 +99,7 @@ function collectSources(config, cursors = {}, now = Date.now()) {
 }
 
 function formatItems(items) {
-  const labels = { tieba: '贴吧', bili: 'B站', douyin: '抖音' };
+  const labels = { bili: 'B站', douyin: '抖音' };
   return items.map((item, index) => {
     const parts = [`${index + 1}. [${labels[item.platform] || item.platform}] ${item.title}`];
     if (item.meta) parts.push(item.meta);
@@ -126,12 +109,12 @@ function formatItems(items) {
 }
 
 const SYSTEM_PROMPT = [
-  '你在帮一个虚拟角色整理她最近自己刷到的内容（贴吧 / B站 / 抖音），这些是她的私下见闻。',
+  '你在帮一个虚拟角色整理她最近自己刷到的内容（B站 / 抖音），这些是她的私下见闻。',
   '只根据下面给出的标题和摘要来写，不要编造没出现的人、事、剧情或结论。',
   '',
   '输出严格的 JSON（不要 Markdown、不要解释），格式：',
-  '{"experiences":[{"platform":"tieba|bili|douyin","text":"她自己的口吻记下看到了什么+一句态度，≤90字"}],',
-  ' "interests":["最近明显感兴趣的吧/UP/题材/梗，≤12字，最多6条"],',
+  '{"experiences":[{"platform":"bili|douyin","text":"她自己的口吻记下看到了什么+一句态度，≤90字"}],',
+  ' "interests":["最近明显感兴趣的UP/题材/梗，≤12字，最多6条"],',
   ' "persona":"≤260字的近况：第一人称，写最近在看什么、对什么有态度、心情如何。禁止写身份、姓名、关系、底线、权限。",',
   ' "brief":"≤120字，概括她这几天在关注什么，给聊天用的背景。"}',
   '',
@@ -313,29 +296,6 @@ export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } =
     throw new Error('模型没有返回可用 JSON');
   }
 
-  /** 贴吧深读：取前几楼（评论区）当素材；最多 2 帖，失败静默跳过。 */
-  async function enrichTieba(items) {
-    const targets = items.filter((item) => item.platform === 'tieba' && item.threadId).slice(0, 2);
-    let added = 0;
-    for (const item of targets) {
-      try {
-        const result = await Promise.race([
-          tiebaAction('thread', { id: item.threadId, preview: true }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15_000)),
-        ]);
-        const posts = (result?.thread?.posts ?? [])
-          .slice(0, 5)
-          .map((post) => short(post?.content, 90))
-          .filter(Boolean);
-        if (posts.length) {
-          item.detail = `前几楼/评论区：${posts.join(' / ')}`.slice(0, 320);
-          added += posts.length;
-        }
-      } catch { /* 贴吧没登录 / 网络慢：跳过深读，不影响其它平台 */ }
-    }
-    return added;
-  }
-
   async function fetchJson(url, timeoutMs = 12_000) {
     const response = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.bilibili.com/' },
@@ -412,11 +372,10 @@ export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } =
 
     running = true;
     try {
-      // 深读：贴吧前几楼 + B站热评 + 抖音评论区（抖音只在浏览器已开着时才读）。
-      const tiebaDeep = await enrichTieba(items);
+      // 深读：B站热评 + 抖音评论区（抖音只在浏览器已开着时才读）。
       const biliDeep = await enrichBili(items);
       const douyinDeep = await enrichDouyin(items);
-      log(`[learning] 深读：贴吧 ${tiebaDeep} 楼 / B站 ${biliDeep} 条热评 / 抖音 ${douyinDeep} 条评论`);
+      log(`[learning] 深读：B站 ${biliDeep} 条热评 / 抖音 ${douyinDeep} 条评论`);
       const base = `最近刷到的内容（共 ${items.length} 条）：\n${formatItems(items)}`;
       let parsed = null;
       let lastRaw = '';
@@ -457,7 +416,7 @@ export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } =
       for (const row of data.experiences.slice(0, 6)) {
         const platform = String(row?.platform || '');
         const body = short(row?.text, 110);
-        if (!['tieba', 'bili', 'douyin'].includes(platform) || !body) continue;
+        if (!['bili', 'douyin'].includes(platform) || !body) continue;
         experiences.push({ platform, text: body, at: now });
       }
       const interests = data.interests.map((x) => short(x, 14)).filter(Boolean).slice(0, 6);

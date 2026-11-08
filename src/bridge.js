@@ -15365,12 +15365,8 @@ async function main(options = {}) {
     const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(textContent)
       : '';
-    // 提到贴吧时直接把工具入口塞给模型：QQ 会话没有本地 shell，
-    // 不提醒就会去 web_fetch（网页没有登录态，只会看到 403/未登录）。
-    const tiebaHint = /贴吧/.test(`${plainContent} ${textContent}`)
-      ? `【贴吧】刷贴吧 / 看帖 / 回帖 / 签到请用 mcp__snowluma-host__ 的 tieba_feed、tieba_thread、tieba_replyme、tieba_reply、tieba_like、tieba_sign、tieba_post；这些工具走已登录的 BDUSS。不要用 web_fetch 抓贴吧网页（网页侧没有登录态，会 403）。不要开浏览器。\n`
-      : '';
-    const promptText = recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + tiebaHint + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
+    // 贴吧已由 dsh-tieba-dive 插件接管（自带工具与提示），这里不再塞入口。
+    const promptText = recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
       + (isOwner ? ownerMessageTag() : '')
       + peerAliasTagV2(key, isOwner)
       + senderLabel + '：' + textContent
@@ -15408,10 +15404,7 @@ async function main(options = {}) {
           const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
             ? biliMemory.recallBlock(textContent)
             : '';
-          const tiebaHint = /贴吧/.test(`${plainContent} ${textContent}`)
-            ? `【贴吧】刷贴吧 / 看帖 / 回帖 / 签到请用 mcp__snowluma-host__ 的 tieba_feed、tieba_thread、tieba_reply、tieba_like、tieba_sign；这些工具走已登录的 BDUSS，不要用 web_fetch 抓网页。\n`
-            : '';
-          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${tiebaHint}${douyinHintFor(`${plainContent} ${textContent}`)}${isOwner ? ownerMessageTag() : ''}${peerAliasTagV2(key, isOwner)}${textContent}${mediaHintFor(key, messageRef, mediaList)}`;
+          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${douyinHintFor(`${plainContent} ${textContent}`)}${isOwner ? ownerMessageTag() : ''}${peerAliasTagV2(key, isOwner)}${textContent}${mediaHintFor(key, messageRef, mediaList)}`;
           scheduleSocialReply(
             key, promptText,
             Number(cfg.social?.activeReplyDelayMinMs ?? 2000),
@@ -15448,10 +15441,7 @@ async function main(options = {}) {
       const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
         ? biliMemory.recallBlock(textContent)
         : '';
-      const tiebaHint = /贴吧/.test(`${plainContent} ${textContent}`)
-        ? `【贴吧】刷贴吧 / 看帖 / 回帖 / 签到请用 mcp__snowluma-host__ 的 tieba_feed、tieba_thread、tieba_reply、tieba_like、tieba_sign；这些工具走已登录的 BDUSS，不要用 web_fetch 抓网页。\n`
-        : '';
-      const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${tiebaHint}${douyinHintFor(`${plainContent} ${textContent}`)}【群聊上下文】\n${buildContextBlock(key)}\n【当前消息】${currentLine}${mediaHintFor(key, messageRef, mediaList)}\n\n${replyInstruction}`;
+      const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${douyinHintFor(`${plainContent} ${textContent}`)}【群聊上下文】\n${buildContextBlock(key)}\n【当前消息】${currentLine}${mediaHintFor(key, messageRef, mediaList)}\n\n${replyInstruction}`;
       if (isOwner && kind === 'private') {
         log(`社交模式：管理员私聊触发，立即投递 ${key}`);
         await deliverPrompt(key, promptText, { media: mediaList });

@@ -7,7 +7,7 @@
  *   · B站侧：读/写 ~/.dsh/surfcore/bili.config.json、cookie 写入、依赖体检、
  *            待审回复、通知测试、生物钟（scheduler.js）；
  *   · 合体层：统一人设卡、QQ→B站 脱敏记忆、身份对齐、扩展接口、平台适配器
- *            （qq/bili 内置，tieba 预留）。
+ *            （qq/bili 内置）。
  *
  * 安全：
  *   · 所有路由只接受本机回环 + DSH connection.requestRejection；
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ALIGN_FILE, BACKUP_DIR, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR, BILI_MJS,
   BILI_TOOLS_DIR, DATA_ROOT, DSH_HOME, MEMORY_DIR, PET_DATA_DIR, PLUGIN_ROOT, PLUGIN_LOG, QQ_ALIGNMENT_BRIEF,
-  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, TIEBA_MJS, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
+  QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
 import { discoverSnowLumaConnection, readOneBotTokens, snowLumaHomeCandidates } from '../../src/snowluma-conn.js';
@@ -38,12 +38,6 @@ import {
 } from './characters.js';
 import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
-import {
-  clearTiebaCredentials, markTiebaVerified, readTiebaCredentials, readTiebaViewHistory,
-  resolveTiebaAuth, saveTiebaCookieLogin, tiebaAction, tiebaConfig, tiebaStatus,
-  verifyStoredTiebaCredentials,
-} from './tieba.js';
-import { cancelTiebaQrLogin, pollTiebaQrLogin, startTiebaQrLogin } from './tieba-qr-login.mjs';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -246,7 +240,6 @@ export function apply(ctx) {
   const platforms = new PlatformRegistry();
   platforms.setStatus('qq', () => bridgeStatus());
   platforms.setStatus('bili', () => biliToQqStatus());
-  platforms.setStatus('tieba', () => tiebaStatus());
   // 抖音：只把「总开关 / 现在能不能刷 / 窗口在不在」带回概览，详细状态在设置页读。
   configureDouyinLog((message) => pluginLog(message));
   let llmService = null;
@@ -995,8 +988,7 @@ export function apply(ctx) {
       Promise.resolve(biliToQqStatus()),
       Promise.resolve(memoryStatus()),
     ]);
-    // 贴吧 / 抖音的运行状态也带回概览，避免只有 QQ / B站 两张卡。
-    const tiebaOverview = (() => { try { return tiebaStatus(); } catch (error) { return { ok: false, error: String(error?.message ?? error) }; } })();
+    // 抖音的运行状态也带回概览，避免只有 QQ / B站 两张卡。
     const douyinOverview = await douyinStatus().catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
     // SnowLuma 只报「未连接」没用：这里给出可执行的诊断（没启动 / 在登录页 / token 不对）。
     const snowDiag = await diagnoseSnowLuma(bridge?.snowluma ?? {}).catch(() => ({ state: 'unknown', hint: '' }));
@@ -1020,7 +1012,6 @@ export function apply(ctx) {
       bridge,
       bili,
       memory,
-      tieba: tiebaOverview,
       douyin: douyinOverview,
       memoryCard: memoryCardStatusNow(),
       admin: adminSummary(all.unified?.admin),
@@ -1945,13 +1936,6 @@ ${body}`;
       const add = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
       add('QQ 桥接源码', fs.existsSync(path.join(QQBOT_ROOT, 'src', 'bridge.js')), maskPath(path.join(QQBOT_ROOT, 'src', 'bridge.js')));
       add('B站工具链', fs.existsSync(BILI_MJS), maskPath(BILI_MJS));
-      add('贴吧工具链', fs.existsSync(TIEBA_MJS), maskPath(TIEBA_MJS));
-      const tiebaAuth = resolveTiebaAuth();
-      const tiebaCredFile = path.join(TIEBA_DIR, 'credentials.json');
-      add('贴吧凭据文件', fs.existsSync(tiebaCredFile), fs.existsSync(tiebaCredFile) ? '已写入（不回显内容）' : '暂无');
-      add('贴吧认证状态', tiebaConfig().enabled === true
-        ? (tiebaAuth.bduss ? `已配置（BDUSS，来源：${tiebaAuth.source === 'manual' ? '配置文件' : '设置页'}）` : '未配置（请粘贴 BDUSS）')
-        : '未启用');
       add('B站配置', fs.existsSync(BILI_CONFIG), maskPath(BILI_CONFIG));
       add('B站 cookie', fs.existsSync(BILI_CRED), fs.existsSync(BILI_CRED) ? '已写入（不回显内容）' : '未写入');
       add('人设卡', fs.existsSync(resolvePersonaFile()), maskPath(resolvePersonaFile()));
@@ -3765,130 +3749,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { ok: true, platforms: await platforms.statusAll(), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
   }
 
-  // ── 贴吧（BDUSS 登录 + 手机版/app 接口）────────────────────────────────
-  async function handleTieba(req, res, url) {
-    const pathname = url.pathname;
-    // 保存 BDUSS 并当场验证（curl 网络层，百度不认 Node fetch 的 TLS 指纹）
-    if (pathname.endsWith('/login')) {
-      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
-      let body = {};
-      try { body = await readJsonBody(req); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
-      try {
-        pluginLog('[贴吧登录] 保存 BDUSS');
-        const result = await saveTiebaCookieLogin(String(body.cookie ?? body.bduss ?? ''));
-        try { markTiebaVerified(); } catch {}
-        json(res, 200, { ok: true, ...result });
-      } catch (error) {
-        pluginLog(`[贴吧登录] 失败：${String(error?.message ?? error)}`);
-        json(res, 400, { ok: false, code: String(error?.code ?? ''), error: String(error?.message ?? error) });
-      }
-      return;
-    }
-    // 手机扫码登录：换到 BDUSS 后由后端用 curl 验证并落盘，用户不用复制任何东西
-    if (pathname.endsWith('/qr/start')) {
-      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
-      try {
-        pluginLog('[贴吧登录] 生成二维码');
-        json(res, 200, { ok: true, ...(await startTiebaQrLogin()) });
-      } catch (error) {
-        pluginLog(`[贴吧登录] 二维码失败：${String(error?.message ?? error)}`);
-        json(res, 503, { ok: false, error: String(error?.message ?? error) });
-      }
-      return;
-    }
-    if (pathname.endsWith('/qr/poll')) {
-      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
-      const id = String(url.searchParams.get('id') ?? '').trim();
-      if (!/^tieba_qr_[0-9a-f-]{36}$/i.test(id)) { json(res, 400, { ok: false, error: 'id 不合法' }); return; }
-      const result = await pollTiebaQrLogin(id);
-      if (result?.status === 'failed') pluginLog(`[贴吧登录] 扫码失败：${String(result.error ?? '').slice(0, 300)}`);
-      if (result?.status === 'confirmed') { try { markTiebaVerified(); } catch {} }
-      json(res, 200, result);
-      return;
-    }
-    if (pathname.endsWith('/qr/cancel')) {
-      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
-      let body = {};
-      try { body = await readJsonBody(req); } catch {}
-      cancelTiebaQrLogin(String(body.id ?? '').trim());
-      json(res, 200, { ok: true });
-      return;
-    }
-    // 浏览器自动化入口已废弃（Chrome 136 读不到加密 cookie，且要关浏览器）
-    if (pathname.endsWith('/open-token')) {
-      json(res, 410, {
-        ok: false, code: 'tieba.legacy-login-removed',
-        error: '领取 token 页已移除，请用扫码登录',
-        hint: '点「扫码登录」，手机确认后自动完成',
-      });
-      return;
-    }
-    // 旧的浏览器登录入口（已废弃）
-    if (pathname.includes('/login/start') || pathname.includes('/login/poll') || pathname.includes('/login/cancel')) {
-      json(res, 410, {
-        ok: false, code: 'tieba.legacy-login-removed',
-        error: '浏览器自动登录已移除，改为粘贴 BDUSS',
-        hint: '把 BDUSS 粘贴到输入框，点「保存并测试」',
-      });
-      return;
-    }
-    if (pathname.endsWith('/credentials/clear')) {
-      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
-      clearTiebaCredentials();
-      json(res, 200, { ok: true });
-      return;
-    }
-    if (pathname.endsWith('/account/verify')) {
-      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
-      try { json(res, 200, await verifyStoredTiebaCredentials()); }
-      catch (error) { json(res, 500, { ok: false, error: `核查失败：${String(error?.message ?? error).slice(0, 160)}` }); }
-      return;
-    }
-    // 看过的帖子（设置页「观看记录」）
-    if (req.method === 'GET' && pathname.endsWith('/history')) {
-      try {
-        json(res, 200, {
-          ok: true,
-          ...readTiebaViewHistory({
-            limit: Number(url.searchParams.get('limit')) || 200,
-            q: url.searchParams.get('q') ?? '',
-            days: Number(url.searchParams.get('days')) || 0,
-          }),
-        });
-      } catch (error) {
-        json(res, 500, { ok: false, error: String(error?.message ?? error) });
-      }
-      return;
-    }
-    // 默认 GET → 状态
-    if (req.method === 'GET') { json(res, 200, tiebaStatus()); return; }
-    // POST → action 分发（heartbeat-now / verify / feed / ...）
-    let body = {};
-    try { body = await readJsonBody(req); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
-    const action = String(body.action ?? '');
-    if (action === 'heartbeat-now') {
-      if (!scheduler || !schedulerStatus.running) {
-        json(res, 400, { ok: false, error: 'B站生物钟没在运行：贴吧跟它共用作息，先启动 B站 平台' });
-        return;
-      }
-      try {
-        const result = await scheduler.wakeTieba?.('手动');
-        json(res, 200, { ok: true, ...result });
-      } catch (error) {
-        json(res, 500, { ok: false, error: String(error?.message ?? error) });
-      }
-      return;
-    }
-    const allowed = ['verify', 'feed', 'thread', 'floor', 'replyme', 'post', 'reply', 'like', 'unlike', 'sign', 'delete-thread', 'delete-post', 'rename', 'summary', 'status'];
-    if (!allowed.includes(action)) { json(res, 400, { ok: false, error: `未知贴吧动作：${action || '（空）'}` }); return; }
-    try {
-      const result = await tiebaAction(action, body);
-      json(res, 200, { ok: true, ...result });
-    } catch (error) {
-      json(res, 400, { ok: false, error: String(error?.message ?? error), code: String(error?.code ?? '') });
-    }
-  }
-
   // ── 全局模型（对话页）：一份选择，插件后台任务与新建会话共用 ───────────
   async function modelCatalog() {
     const saved = readUnified().config.model ?? { provider: '', model: '' };
@@ -4107,7 +3967,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/models`) { await handleModels(req, res); return; }
     if (pathname === `${API_PREFIX}/capabilities`) { await handleCapabilities(req, res); return; }
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }
-    if (pathname.startsWith(`${API_PREFIX}/tieba`)) { await handleTieba(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/douyin`)) { await handleDouyin(req, res, url); return; }
     if (pathname === `${API_PREFIX}/compat/scan`) {
       try {

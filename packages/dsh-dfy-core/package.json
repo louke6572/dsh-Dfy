@@ -1,0 +1,22 @@
+{
+  "name": "dsh-dfy-core",
+  "version": "0.1.0",
+  "description": "dsh-Dfy 共享核心：路径/统一配置存储/HTTP 护栏（供 dsh-dfy 聚合包与各功能插件包共用）",
+  "type": "module",
+  "exports": {
+    "./paths.js": "./backend/lib/paths.js",
+    "./store.js": "./backend/lib/store.js",
+    "./http-guard.js": "./backend/lib/http-guard.js",
+    "./douyin-config.mjs": "./backend/lib/douyin-config.mjs",
+    "./tools/lib/fish-guard.mjs": "./backend/tools/lib/fish-guard.mjs",
+    "./tools/lib/limits.mjs": "./backend/tools/lib/limits.mjs",
+    "./tools/lib/kinds.mjs": "./backend/tools/lib/kinds.mjs",
+    "./tools/lib/state-paths.mjs": "./backend/tools/lib/state-paths.mjs",
+    "./tools/lib/config.mjs": "./backend/tools/lib/config.mjs",
+    "./src/config-locate.js": "./src/config-locate.js",
+    "./src/fish-guard.js": "./src/fish-guard.js",
+    "./src/admin-identity.js": "./src/admin-identity.js",
+    "./src/memory-card.js": "./src/memory-card.js",
+    "./src/share-mode.js": "./src/share-mode.js"
+  }
+}

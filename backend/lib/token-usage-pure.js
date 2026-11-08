@@ -12,7 +12,7 @@ import {
   totalTokensOf,
 } from '../../src/model-prices.js';
 
-export const CATEGORY_KEYS = ['qq', 'bili', 'tieba', 'douyin', 'other'];
+export const CATEGORY_KEYS = ['qq', 'bili', 'douyin', 'other'];
 export const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 export const clamp0 = (v) => Math.max(0, Number(v) || 0);

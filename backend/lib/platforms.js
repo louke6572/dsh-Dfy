@@ -1,5 +1,5 @@
 /**
- * 平台接入层（为后续贴吧预留；微博 2026-10-23 明确不做，已移除占位）。
+ * 平台接入层（微博 2026-10-23 明确不做，已移除占位；贴吧已由 dsh-tieba-dive 插件替代）。
  *
  * 核心数据模型不是“QQ 和 B站写死”，而是：
  *   PlatformAdapter = {
@@ -9,9 +9,8 @@
  *     dispose()
  *   }
  *
- * v1 内置 qq / bili / tieba / douyin 四个适配器；tieba 走官方 Agent 社区 API（TB_TOKEN），
- * douyin 走本机 Edge 的网页版（vendor/douyin，见 lib/douyin.js）。
- * 后续要接贴吧（或其它平台），只需新增一个 adapter（或独立扩展包调用 registerPlatform），
+ * v1 内置 qq / bili / douyin 三个适配器；douyin 走本机 Edge 的网页版（vendor/douyin，见 lib/douyin.js）。
+ * 后续要接新平台，只需新增一个 adapter（或独立扩展包调用 registerPlatform），
  * 不需要改记忆同步、身份对齐、设置窗口的主流程。
  */
 import fs from 'node:fs';
@@ -30,7 +29,6 @@ export const PLATFORM_CAPABILITIES = Object.freeze([
 const BUILTIN_PLATFORMS = [
   { id: 'qq', name: 'QQ', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'prompt.block', 'actions'] },
   { id: 'bili', name: 'B站', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] },
-  { id: 'tieba', name: '贴吧', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] },
   { id: 'douyin', name: '抖音', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'prompt.block', 'actions'] },
 ];
 

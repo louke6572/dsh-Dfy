@@ -25,10 +25,10 @@ import path from 'node:path';
 export const BUDGET_VERSION = 1;
 /** 80% 触发提醒；100% 才拦截。 */
 export const ALERT_RATIO = 0.8;
-export const SCOPES = Object.freeze(['qq', 'bili', 'tieba', 'douyin', 'other', 'total']);
-export const CATEGORY_SCOPES = Object.freeze(['qq', 'bili', 'tieba', 'douyin', 'other']);
+export const SCOPES = Object.freeze(['qq', 'bili', 'douyin', 'other', 'total']);
+export const CATEGORY_SCOPES = Object.freeze(['qq', 'bili', 'douyin', 'other']);
 export const UNIT_KEYS = Object.freeze(['cny', 'tokens']);
-export const SCOPE_LABELS = Object.freeze({ qq: 'QQ', bili: 'B站', tieba: '贴吧', douyin: '抖音', other: '其他', total: '总额' });
+export const SCOPE_LABELS = Object.freeze({ qq: 'QQ', bili: 'B站', douyin: '抖音', other: '其他', total: '总额' });
 export const UNIT_LABELS = Object.freeze({ cny: '元', tokens: 'token' });
 export const BUDGET_FILES = Object.freeze({
   budget: 'token-budget.json',
@@ -44,7 +44,6 @@ export const BUDGET_FILES = Object.freeze({
 export const DEFAULT_LIMITS = Object.freeze({
   qq: Object.freeze({ cny: 8, tokens: null }),
   bili: Object.freeze({ cny: null, tokens: null }),
-  tieba: Object.freeze({ cny: null, tokens: null }),
   douyin: Object.freeze({ cny: null, tokens: null }),
   other: Object.freeze({ cny: null, tokens: null }),
   total: Object.freeze({ cny: null, tokens: null })

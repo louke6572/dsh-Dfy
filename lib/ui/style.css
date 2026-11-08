@@ -332,10 +332,7 @@ a.qbw-vtitle:hover{color:var(--qbw-accent)}
 .qbw-app .qbw-page-bili .qbw-switch,
 .qbw-app .qbw-page-qq .qbw-switch{width:17px;height:17px}
 
-/* ── 平台 · 贴吧 / 抖音：输入框同样放大 ─────────────────────────────── */
-.qbw-app .qbw-page-tieba .qbw-input,
-.qbw-app .qbw-page-tieba .qbw-select,
+/* ── 平台 · 抖音：输入框同样放大 ─────────────────────────────── */
 .qbw-app .qbw-page-douyin .qbw-input,
 .qbw-app .qbw-page-douyin .qbw-select{height:34px;flex:1 1 220px;font-size:13px}
-.qbw-app .qbw-page-tieba .qbw-switch,
 .qbw-app .qbw-page-douyin .qbw-switch{width:17px;height:17px}

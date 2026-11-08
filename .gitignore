@@ -32,3 +32,9 @@ plugins/whale-widget/docs/assets-第四版/
 # 测试/临时文件
 lib/__mock_head.js
 lib/__run.js
+
+# IDE / 工具目录
+.trae/
+
+# ZCode 会话产物
+.zcode/

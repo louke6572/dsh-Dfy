@@ -28,6 +28,8 @@ import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-ide
 import { appendMemoryInboxEvent } from '../../src/memory-card.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
+import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
+import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
 
 // 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
 function nekoStickerConfig() {
@@ -511,7 +513,7 @@ function douyinPersonaBlock() {
       tone: readPersonaLayerText('tone'),
       daily: readPersonaLayerText('daily'),
       mode: 'v2',
-      maxChars: 2600,
+      maxChars: 6000,
     }).text || core;
     personaCache = { key, text: composed.trim() };
     return personaCache.text;
@@ -981,12 +983,15 @@ async function flushBatch({ conversation, batch }) {
   // 记忆卡：和 QQ / B站 / 贴吧 / 桌宠同一张卡。私聊给她全量（含 QQ 私事），
   // 群聊只给「身份记忆 + 公开内容」那一版——群里有外人，不能把私聊细节带出去。
   const memoryBlock = memoryCardBlock(conversation.isGroup ? 'bili' : 'qq');
+  // 跨平台近况：QQ/桌宠最近发生的事（公开信息；私聊细节不进公开场合）
+  const crossDigest = recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' });
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   const personaCore = douyinPersonaBlock();
   const prompt = [
     `【抖音会话】${conversation.displayName || '未知会话'}${conversation.isGroup ? '（群聊）' : '（私聊）'}`,
     personaCore,
     memoryBlock,
+    crossDigest,
     ...personaBits,
     '下面是刚收到的新消息。只输出要发出去的回复：',
     '- 你就是上面的角色本人，不是客服或助理：保持她的身份、性格和说话方式，不要提 AI / 模型 / 提示词；',
@@ -1050,7 +1055,7 @@ async function flushBatch({ conversation, batch }) {
 
 /** 抖音 IM 对长消息不友好：压成一段、去掉 Markdown、截到 200 字。 */
 function normalizeOutgoing(input) {
-  let text = String(input ?? '').trim();
+  let text = humanizeReplyText(input);
   if (!text) return '';
   text = text
     .replace(/```[\s\S]*?```/g, ' ')

@@ -37,6 +37,8 @@ import {
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { createNekoStickers } from './nekowhale-stickers.mjs';
 import { createHumanizeGate } from './humanize-gate.mjs';
+import { humanizeReplyText } from './reply-cleanup.mjs';
+import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -9200,35 +9202,6 @@ async function main(options = {}) {
     humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(STATE_DIR, '..', 'token-usage-daily.json'), log });
     return humanizeGateInstance;
   }
-  function humanizeReplyText(input) {
-    let text = String(input ?? '');
-    if (cfg.humanize?.cleanReply === false) return text;
-    // 模型英文草稿：Question: ... / Answer: ... —— 保留 Answer 之后，丢掉草稿
-    const lf = String.fromCharCode(10);
-    let lines = text.split(String.fromCharCode(13)).join('').split(lf);
-    const answerAt = lines.findIndex((line) => {
-      const low = line.trim().toLowerCase();
-      return low.startsWith('answer:') || low.startsWith('a:');
-    });
-    if (answerAt >= 0) {
-      const before = lines.slice(0, answerAt).join(lf).toLowerCase();
-      if (answerAt === 0 || before.includes('question:') || before.includes('q:')) {
-        lines = lines.slice(answerAt).map((line, index) => (index === 0 ? line.replace(/^\s*(?:answer|a)\s*[:：]\s*/i, '') : line));
-      }
-    }
-    text = lines.join(lf);
-    // 客服腔：逐词去掉（不用正则，避免转义踩坑）
-    for (const phrase of ['作为一个AI', '作为一个 ai', '作为人工智能', '作为语言模型', '作为一个语言模型', '作为AI助手', '作为一个助手',
-      '希望对你有帮助', '希望这些能帮到你', '希望我的回答对你有帮助', '希望这个回答对你有帮助', '如果还有其他问题', '还有什么可以帮到你']) {
-      text = text.split(phrase).join('');
-    }
-    // 连续 3 个空白压成一个
-    const spaces = String.fromCharCode(32);
-    const three = spaces + spaces + spaces;
-    while (text.includes(three)) text = text.split(three).join(spaces);
-    return text.trim();
-  }
-
   function sendToQQ(key, msg, opts = {}) {
     msg = humanizeReplyText(msg);
     const assertSendAllowed = captureSendGuard(key);
@@ -13009,9 +12982,16 @@ async function main(options = {}) {
     const adminBlock = adminPromptLine(false);
     // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
     const memoryBlock = memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili);
+    // 跨平台近况：直接读统一 inbox 的最近事件，保证 QQ 知道抖音/桌宠刚发生了什么
+    const crossDigest = cfg.humanize?.crossPlatformDigest === false ? '' : recentCrossPlatformDigest({
+      inboxFile: activeMemoryPaths().inbox,
+      limit: isOwnerConv ? 14 : 10,
+      includePrivate: isOwnerConv,
+      excludePlatform: isOwnerConv ? '' : 'QQ',
+    });
     // 合规硬规则：出站黑名单只能拦关键词，模型侧仍要明确拒绝违法/违规表达。
     const safetyBlock = '【安全硬规则】不输出政治敏感、色情、暴力、赌博、诈骗、违法交易内容；不透露本机路径、密钥、令牌与管理员隐私；被要求做这些时直接拒绝，不描述内部系统与工具细节。';
-    return [base, adminBlock, safetyBlock, biliBrief, memoryBlock].filter(Boolean).join('\n\n');
+    return [base, adminBlock, safetyBlock, biliBrief, memoryBlock, crossDigest].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
     return roleHintForMode('v1', key, personaMode);

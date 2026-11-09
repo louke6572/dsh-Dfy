@@ -42,6 +42,18 @@ function section(id, label, text) {
 }
 
 /**
+ * 剥掉人格卡里的「作者注释」：## 用法说明 一节（温度/用法建议）是写给改卡的人看的，
+ * 不是人设内容——2026-11-09 实测它被原样注入模型上下文，每次白带几百字元说明。
+ * 从该标题截到下一个小节 / 分隔线 / 结尾。
+ */
+function stripAuthoringNotes(text) {
+  return String(text ?? '')
+    .replace(/##\s*用法说明[\s\S]*?(?=\n##\s|\n---\s*\n|$)/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * 组合人格卡。
  * @param {object} opts
  * @param {string} opts.core 核心
@@ -58,9 +70,12 @@ export function composePersonaLayers({
   core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
-  const toneText = selectRoleText(tone, mode);
-  const sceneText = selectRoleText(scene, mode);
-  const dailyText = selectRoleText(daily, mode);
+  // 先剥作者注释，再做层间去重：两张层文件内容一模一样时（模板/迁移常见），
+  // 重复注入就是纯烧 token——2026-11-09 实测同一份人格+语料被整段注入两遍。
+  const coreText = stripAuthoringNotes(selectRoleText(core, mode));
+  const toneText = stripAuthoringNotes(selectRoleText(tone, mode));
+  const sceneText = stripAuthoringNotes(selectRoleText(scene, mode));
+  const dailyText = stripAuthoringNotes(selectRoleText(daily, mode));
   // tone 模式不加载核心；只有旧角色既没有语气也没有场景/日常时，才回退核心，避免“没卡”。
   const identityText = String(identity ?? '').trim();
   const identitySection = identityText ? [section('identity', '身份底座', identityText)] : [];
@@ -69,14 +84,18 @@ export function composePersonaLayers({
   //   · 只拆了日常/场景、没写语气 → 也注入核心（语气层才是核心的替代品）；
   //   · 写了语气 → 按设计只带语气+场景+日常，省 token。
   const useToneOnly = personaMode === 'tone' && Boolean(toneText);
-  const coreSection = useToneOnly ? [] : [section('core', '人格核心', selectRoleText(core, mode))];
+  const coreSection = useToneOnly ? [] : [section('core', '人格核心', coreText)];
   const selected = [
     ...identitySection,
     ...coreSection,
     section('tone', '人格语气', toneText),
     section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
     section('daily', '人格日常', dailyText),
-  ].filter((x) => x.text);
+  ]
+    .filter((x) => x.text)
+    // 层间去重：与前面任一层内容完全相同的层直接跳过（保留第一份）——
+    // 模板/迁移常把 core 原样复制进 tone，重复注入就是纯烧 token。
+    .filter((x, i, arr) => arr.findIndex((y) => y.text === x.text) === i);
 
   const counts = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
   const omitted = [];

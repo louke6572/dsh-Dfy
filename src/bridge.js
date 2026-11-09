@@ -16889,6 +16889,13 @@ async function main(options = {}) {
     // 连接成功后顺手确认一下 token 是否已跟当前账号对齐；不一致就写回 config.json，
     // 让 MCP 工具（另一个进程）也能拿到正确的 token。
     void syncTokenToFile();
+    // 预热/刷新表情库：必须等 WS 真的通了再拉 —— 以前放在启动处（bot.connect() 之后立刻调），
+    // 而 SnowLuma 的 WS 首连几乎必然被拒（HTTP token ≠ WS token）→ 每次启动都打一条
+    // 「同步收藏表情失败: SnowLuma WebSocket closed before opening」，看着像故障、其实必然。
+    // 放到 open 里：首连/自愈重连/断线重连都会在这里刷新一次，日志只在真失败时出现。
+    if (cfg.socialV2?.sticker?.enabled !== false) {
+      syncStickerLibrary(true).catch((error) => log(`[sticker] 连接后刷新表情库失败（不影响发送，工具调用时会再试）：${error?.message ?? error}`));
+    }
   });
 
   /**
@@ -17032,10 +17039,8 @@ async function main(options = {}) {
     log(`SnowLuma 首次连接未成功（将在后台自动重连并尝试自愈 WS token）: ${error?.message ?? error}`);
   });
   log('桥接已启动。按 Ctrl+C 退出。');
-  // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
-  if (cfg.socialV2?.sticker?.enabled !== false) {
-    syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
-  }
+  // 表情库预热放在 bot.on('open') 里（见上）：WS 没通时拉收藏表情必然失败，
+  // 启动阶段调用只会制造一条吓人的假故障日志。AI 首次调用工具时也会兜底再试。
 
   // ── B站：记忆注入 / 动态同步 / 每天 8 次分享 ─────────────────────────────
   // groups 为空时默认跟随 allow.groups（白名单群）。这是用户明确要求的“白名单每个群”。

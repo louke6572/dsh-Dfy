@@ -10378,6 +10378,31 @@ async function main(options = {}) {
     return 'failed';
   }
 
+  // —— QQ 会话标题：侧栏一眼认出哪个是 QQ 对话（与抖音 applySessionTitle 同一套）——
+  // 没有标题时 DSH 会用 prompt 开头的「【当前时间】…」当会话名，完全认不出是 QQ 对话，
+  // 用户以为「对话没进 DSH 会话」。创建后和已有映射首次使用时各尝试一次（每进程一次）。
+  const titledSessions = new Set();
+  function qqSessionTitleOf(key) {
+    const [kind, id] = String(key ?? '').split(':');
+    if (kind === 'group') {
+      const name = String(fishGroupNames.get(id) || '').trim();
+      return `QQ 群 · ${name || id}`.slice(0, 60);
+    }
+    if (cfg.ownerQQ && String(id) === String(cfg.ownerQQ)) return 'QQ 私聊 · 主人';
+    return `QQ 私聊 · ${id}`.slice(0, 60);
+  }
+  async function applyQqSessionTitle(key, sessionId) {
+    if (!sessionId || titledSessions.has(sessionId)) return;
+    titledSessions.add(sessionId); // 先占位：失败也只到下次重启再试，避免每条消息都打一次改名
+    const title = qqSessionTitleOf(key);
+    try {
+      await withTimeout(api.callUnary('session/rename', { sessionId, title }), DSH_CONTROL_TIMEOUT_MS, 'session/rename');
+      log(`会话标题已设为「${title}」(${key})`);
+    } catch (error) {
+      log(`会话改名失败（不影响回复）：${String(error?.message ?? error).slice(0, 120)}`);
+    }
+  }
+
   async function ensureSession(key) {
     const epoch = sessionEpoch;
     const policy = sessionPolicy(key);
@@ -10396,6 +10421,8 @@ async function main(options = {}) {
           retireSession(key);
         } else {
           if (epoch !== sessionEpoch || !isCurrentSession(key, existing)) throw new Error('会话创建期间已重置或权限已变化');
+          // 老会话补标题：升级前创建的 QQ 会话标题是「【当前时间】…」，侧栏认不出来。
+          void applyQqSessionTitle(key, existing);
           return existing;
         }
       }
@@ -10456,6 +10483,7 @@ async function main(options = {}) {
       state.sessionPolicies[key] = policy;
       reverse.set(sessionId, key);
       saveState();
+      void applyQqSessionTitle(key, sessionId);
       await ensureChatModel(sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
         if (state.sessions[key] === sessionId) retireSession(key);

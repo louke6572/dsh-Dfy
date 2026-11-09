@@ -64,7 +64,7 @@ import {
   markPurposeDelivered, markPurposeSkip, minePurposeSeeds, normalizePurposeConfig,
   normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
-import { resolvePriceTable } from './model-prices.js';
+import { resolvePriceTable, normalizeUsage } from './model-prices.js';
 import {
   DEFAULT_QQ_FISH_GUARD, appendFishGuardTrigger, assessFishDensity, fishGuardPromptLine, fishGuardReasonText,
   isFishName, normalizeQqFishGuard,
@@ -80,7 +80,7 @@ import {
 import { isOwnerOnlyFrame, canConsumePending, buildQuestionAnswers } from './question-answers.js';
 import { createOwnerAudit } from './owner-audit.js';
 import { createCoalescingWriter } from './save-scheduler.js';
-import { createTokenLedger } from './token-ledger.js';
+import { createTokenLedger, usageOfEvent } from './token-ledger.js';
 import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
 import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
@@ -3371,11 +3371,22 @@ async function main(options = {}) {
   }
 
   /** 摄入一条会话事件到 token 账本；任何异常都不能影响 QQ 主链路。 */
+  /** sessionId → 最近一次模型调用的输入 tokens（miss+hit+write）。
+   *  上下文自动滚动（chat.contextRolloverTokens）的数据源：长会话的全量注入会
+   *  永久写进会话历史，上下文滚到十几万 tokens 后每轮延迟暴涨（实测 127k 时
+   *  单轮 ~2 分钟）。这里只记数字，滚动动作在 turn_end 收尾时执行。 */
+  const sessionContextTokens = new Map();
+
   function recordSessionUsage(sessionId, event) {
     try {
       if (event?.type === 'model/selection') {
         rememberModel(sessionId, event.data);
         noteManualModelSelection(sessionId, event.data);
+      }
+      const evUsage = usageOfEvent(event);
+      if (evUsage) {
+        const buckets = normalizeUsage(evUsage);
+        sessionContextTokens.set(sessionId, (buckets.cacheMiss ?? 0) + (buckets.cacheHit ?? 0) + (buckets.cacheWrite ?? 0));
       }
       const known = sessionModels.get(sessionId);
       tokenLedger.ingestEvent({
@@ -3705,6 +3716,7 @@ async function main(options = {}) {
     if (!sessionId) return false;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
+    sessionContextTokens.delete(sessionId);
     sessionModels.delete(sessionId);
     modelAppliedSessions.delete(sessionId);
     sendToolSucceededSessions.delete(sessionId);
@@ -13136,6 +13148,15 @@ async function main(options = {}) {
     return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 
+  /** 简报瘦身：常驻注入只保留前 max 字（细节由按需召回补），行边界截断 + 「其余略」标记。 */
+  function slimBrief(text, max = 700) {
+    const t = String(text ?? '').trim();
+    if (t.length <= max) return t;
+    const cut = t.slice(0, max);
+    const stop = cut.lastIndexOf('\n');
+    return (stop > 200 ? cut.slice(0, stop) : cut).trimEnd() + '\n……（其余略；聊到相关话题我会想起细节）';
+  }
+
   function roleHintForMode(mode, key = '', personaMode = 'full') {
     const core = roleRawContent();
     const sceneId = personaSceneFromKey(key);
@@ -13152,7 +13173,7 @@ async function main(options = {}) {
     // 但主人的私聊细节、B站经历仍然只对主人开放。
     const isOwnerConv = Boolean(cfg.ownerQQ) && key === `private:${String(cfg.ownerQQ)}`;
     const biliBrief = isOwnerConv && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
-      ? biliMemory.briefBlock()
+      ? slimBrief(biliMemory.briefBlock(), 700)
       : '';
     // 管理员规则放在人格卡之后、记忆之前：优先级高于人格卡，又不会被长记忆挤掉。
     const adminBlock = adminPromptLine(false);
@@ -13165,6 +13186,9 @@ async function main(options = {}) {
       includePrivate: isOwnerConv,
       excludePlatform: isOwnerConv ? '' : 'QQ',
     });
+    // B站简报瘦身：整份简报 1~4k 字每次全量注入都带上，但细节只在话题相关时才有用
+    // （话题相关时 biliMemory.recallBlock 会按需召回具体内容）。常驻版只留前 700 字。
+    // slimBrief 用共享作用域里的同名 helper（见 roleHintForMode 上方）。
     // 合规硬规则：出站黑名单只能拦关键词，模型侧仍要明确拒绝违法/违规表达。
     const safetyBlock = '【安全硬规则】不输出政治敏感、色情、暴力、赌博、诈骗、违法交易内容；不透露本机路径、密钥、令牌与管理员隐私；被要求做这些时直接拒绝，不描述内部系统与工具细节。';
     const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的人和事要记，问到过去先搜。';
@@ -14299,7 +14323,7 @@ async function main(options = {}) {
     // 同一理由反过来：只有主人的私聊才带长期记忆，非主人会话不注入记忆卡/B站记忆。
     const isOwnerConv = Boolean(cfg.ownerQQ) && key === `private:${String(cfg.ownerQQ)}`;
     const biliBrief = isOwnerConv && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
-      ? biliMemory.briefBlock()
+      ? slimBrief(biliMemory.briefBlock(), 700)
       : '';
     const biliRecall = isOwnerConv && lastMsg && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
@@ -16598,6 +16622,24 @@ async function main(options = {}) {
                     st.activeExitAt = 0;
                     log(`社交模式：${key} 退场回合无文本，回到观望`);
                   }
+                }
+              }
+
+              // —— 上下文自动滚动（放在块尾：本轮回复已全部 await 发完，退役不会再打断任何发送）——
+              // 全量注入（人设/记忆/简报）会永久写进会话历史，长会话上下文滚到十几万
+              // tokens：实测 127k tokens 时单轮 ~2 分钟。滚动聊天窗口（最近 10 条）+
+              // 记忆卡 + 按需召回本来就能保证「新会话不断线」，这里补触发器：
+              // 本轮输入 tokens 超过阈值 → 退役旧会话；下一条消息开新会话并重新
+              // 注入一次全量，此后恢复轻量。阈值 0 = 关闭。
+              {
+                const inputTokens = sessionContextTokens.get(frame.sessionId) ?? 0;
+                const rolloverLimit = Math.round(Number(cfg.chat?.contextRolloverTokens ?? 60000));
+                if (rolloverLimit > 0 && inputTokens > rolloverLimit
+                  && state.sessions[key] === frame.sessionId && !retiringSessions.has(frame.sessionId)) {
+                  log(`[上下文滚动] ${key} 本轮输入 ${inputTokens} tokens > ${rolloverLimit}，滚动新会话（记忆卡/最近窗口保持连续）`);
+                  appendActivity(`${key} [上下文滚动] 上下文达 ${inputTokens} tokens，自动滚动新会话`);
+                  retireSession(key, { reason: '上下文超限滚动' });
+                  contextPrimed.delete(key);
                 }
               }
             }

@@ -344,3 +344,6 @@ a.qbw-vtitle:hover{color:var(--qbw-accent)}
 .qbw-doc-list .qbw-rec-title{font-size:13px;line-height:18px}
 .qbw-doc-list .qbw-rec-text{font-size:12px;line-height:17px;margin-top:2px}
 .qbw-doc-list .qbw-hint{font-size:11px;line-height:16px;margin-top:1px}
+
+.qbw-modal-x{flex:0 0 auto;border:1px solid var(--qbw-bd);background:transparent;color:var(--qbw-t2);width:28px;height:28px;border-radius:8px;font-size:18px;line-height:1;cursor:pointer;font-family:inherit}
+.qbw-modal-x:hover{border-color:var(--qbw-accent);color:var(--qbw-t1)}

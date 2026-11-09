@@ -30,6 +30,7 @@ import { memoryCardPromptBlock } from './memory-card.js';
 import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
 import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
 import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
+import { createMemoryRecall } from '../../src/memory-recall.mjs';
 
 // 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
 function memoryRecordMode() {
@@ -1022,6 +1023,7 @@ async function flushBatch({ conversation, batch }) {
   const crossDigest = needFullContext
     ? recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' })
     : '';
+  const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' ')); } catch { return ''; } })();
   const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱）。表情：工具里有 sticker_search / sticker_send 时按需用。';
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   const personaCore = needFullContext ? douyinPersonaBlock() : '';
@@ -1029,6 +1031,7 @@ async function flushBatch({ conversation, batch }) {
     `【抖音会话】${conversation.displayName || '未知会话'}${conversation.isGroup ? '（群聊）' : '（私聊）'}`,
     personaCore,
     memoryBlock,
+    memoryRecallBlock,
     crossDigest,
     mcpToolHint,
     ...personaBits,

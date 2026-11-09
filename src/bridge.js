@@ -38,6 +38,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { createNekoStickers } from './nekowhale-stickers.mjs';
 import { createHumanizeGate } from './humanize-gate.mjs';
 import { humanizeReplyText } from './reply-cleanup.mjs';
+import { createMemoryRecall } from './memory-recall.mjs';
 import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
@@ -230,6 +231,7 @@ const ACTIVE_CHARACTER = readCurrentCharacter();
 const CHARACTER_ID = ACTIVE_CHARACTER?.id ?? '';
 const CHARACTER_EPOCH = Number(ACTIVE_CHARACTER?.epoch ?? 0);
 const MEMORY_CARD_PATHS = resolveMemoryCardPaths(activeMemoryPaths().dir);
+const memoryRecall = createMemoryRecall({ cardFile: MEMORY_CARD_PATHS.json, log });
 const PLATFORM_STATE_DIR = activePlatformStateDir(STATE_DIR);
 // 容量告警私聊节流（同一档 10 分钟内最多一条；插件侧还有 12 小时的同档节流）。
 const memoryCardNotifyAt = new Map();
@@ -15514,7 +15516,10 @@ async function main(options = {}) {
       ? biliMemory.recallBlock(textContent)
       : '';
     // 贴吧已由 dsh-tieba-dive 插件接管（自带工具与提示），这里不再塞入口。
-    const promptText = (longMemoryBlock ? longMemoryBlock + '\n\n' : '') + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
+    // 内置记忆召回：按当前这句话从记忆卡里挑几条相关的（不是整张卡），省 token 也更准。
+    let recallBlock = '';
+    try { recallBlock = memoryRecall.promptBlock(textContent); } catch { recallBlock = ''; }
+    const promptText = (recallBlock ? recallBlock + '\n\n' : '') + recentBlock + + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
       + (isOwner ? ownerMessageTag() : '')
       + peerAliasTagV2(key, isOwner)
       + senderLabel + '：' + textContent

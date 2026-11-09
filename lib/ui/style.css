@@ -186,6 +186,9 @@ body[data-ds-dark-theme] .qbw-app .qbw-nav-groups button.on{background:var(--qbw
 /* 标签胶囊 */
 .qbw-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .qbw-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--qbw-bd);border-radius:999px;padding:1px 8px;font-size:11px;line-height:18px;color:var(--qbw-t2);background:transparent;margin:0}
+.qbw-chip.on{border-color:var(--qbw-accent);color:var(--qbw-t1);font-weight:600}
+.qbw-chips button.qbw-chip{cursor:pointer;font-family:inherit}
+.qbw-chips button.qbw-chip:hover{border-color:var(--qbw-accent)}
 .qbw-chip.on{background:rgba(34,181,115,.12);border-color:rgba(34,181,115,.45);color:#1a8f5c}
 .qbw-chip.warn{background:rgba(224,163,54,.12);border-color:rgba(224,163,54,.45);color:#a06a12}
 .qbw-chip.bad{background:rgba(217,56,61,.10);border-color:rgba(217,56,61,.4);color:#c0353a}

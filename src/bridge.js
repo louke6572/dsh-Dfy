@@ -9246,6 +9246,7 @@ async function main(options = {}) {
   }
 
   function sendToQQ(key, msg, opts = {}) {
+    const burstStartedAt = Date.now();
     msg = humanizeReplyText(msg);
     const markdown = splitMarkdownImages(msg);
     msg = markdown.text;

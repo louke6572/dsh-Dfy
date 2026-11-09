@@ -13180,12 +13180,10 @@ async function main(options = {}) {
       : '';
     // 管理员规则：随人格层一起注入（admin 身份可在设置里改，属易变配置）。
     const adminBlock = adminPromptLine(false);
-    // 记忆卡：首注只带精简版（前 1200 字，按行截断）；**具体细节按需想起**——
-    // 每条消息的 memoryRecall 会按当前话题召回相关条目，常驻全文就是浪费。
-    const memoryBlock = slimBrief(
-      memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili),
-      1200,
-    ).replace('……（其余略；聊到相关话题我会想起细节）', '……（其余记忆按需想起）');
+    // 记忆卡：首注只带「身份记忆版」（初次相遇/锚点/公开近况，天然较小）；
+    // 主人私聊的细节与全部记忆改为按需：每条消息 memoryRecall 召回 + 模型用
+    // memory_search 工具检索。常驻全文就是上下文爆炸的根源。
+    const memoryBlock = memoryCardPromptBlock(MEMORY_CARD_PATHS.promptBili);
     // 跨平台近况：只保留最近几条（主人 6 条/其他人 5 条），细节按需。
     const crossDigest = cfg.humanize?.crossPlatformDigest === false ? '' : recentCrossPlatformDigest({
       inboxFile: activeMemoryPaths().inbox,
@@ -13195,7 +13193,7 @@ async function main(options = {}) {
     });
     // 合规硬规则已烘焙进三个 preset 的 persona 前缀（【…安全规则（最高优先级）】段），
     // 这里不再重复注入。
-    const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的人和事要记，问到过去先搜。';
+    const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的事用 memory_remember 记下；想不起过去的事先用 memory_search 搜——搜不到就说记不清，不要编。';
     return [legacyRole, adminBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
@@ -14340,7 +14338,9 @@ async function main(options = {}) {
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     // 非主人会话用身份记忆版（初次相遇 + 锚点），仍然不暴露主人的私聊细节。
-    const memoryCardText = memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili);
+    // 记忆卡只带「身份记忆版」（初次相遇/锚点/公开近况，天然较小）；主人私聊的
+    // 细节与全部记忆按需：每条消息的召回 + 模型的 memory_search 工具。
+    const memoryCardText = memoryCardPromptBlock(MEMORY_CARD_PATHS.promptBili);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {

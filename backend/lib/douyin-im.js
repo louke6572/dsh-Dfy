@@ -1033,7 +1033,7 @@ async function flushBatch({ conversation, batch }) {
   // 记忆召回：群聊是公开场合，按 platform='bili' 过滤，不把桌宠/私聊记录召回进群（隐私）；
   // 私聊给全量。与上面 memoryCardBlock(isGroup?'bili':'qq') 同一口径。
   const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' '), { platform: conversation.isGroup ? 'bili' : 'qq' }); } catch { return ''; } })();
-  const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱）。表情：工具里有 sticker_search / sticker_send 时按需用。';
+  const mcpToolHint = '【可用工具】长期记忆：memory_remember 记重要的事、memory_search 检索过去（不要编造记不清的事）。表情：工具里有 sticker_search / sticker_send 时按需用。';
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   const personaCore = needFullContext ? douyinPersonaBlock() : '';
   const prompt = [

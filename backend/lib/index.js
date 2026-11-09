@@ -320,9 +320,122 @@ function registerStickerTools(ctx) {
   }
 }
 
+/**
+ * 内置记忆工具（属于本插件）：把「记忆」从被动注入改成模型主动拉取/写入。
+ *   · memory_search：按关键词检索她自己的记忆卡（top-k），想不起来就搜；
+ *   · memory_remember：把重要的事直接写进记忆卡（走 addManualMemory 的脱敏管线）。
+ * 设计（2026-11-09 用户定）：常驻注入只留身份头，细节全部按需检索——
+ * 这是 token 减负的最后一环。
+ */
+function registerMemoryTools(ctx) {
+  const install = (scope) => {
+    try {
+      if (!scope?.tools?.register) return;
+      const output = {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: { text: { type: 'string' } }, required: ['text'],
+        },
+        render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+      };
+      const queryTokens = (q) => {
+        const s = String(q ?? '').toLowerCase();
+        const out = new Set();
+        for (const m of s.matchAll(/[a-z0-9][a-z0-9]+/g)) out.add(m[0]);
+        const cjk = s.replace(/[^\u4e00-\u9fff]/g, ' ');
+        for (const seg of cjk.split(/\s+/)) {
+          if (!seg) continue;
+          for (let i = 0; i + 1 < seg.length; i += 1) out.add(seg.slice(i, i + 2));
+        }
+        return [...out].slice(0, 24);
+      };
+      scope.tools.register({
+        name: 'memory_search',
+        description: '检索你自己的长期记忆（记忆卡）。想不起来某件事、或话题涉及过去经历时先用这个查，不要编造记忆。',
+        parameters: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            query: { type: 'string', description: '检索词：人名/事件/关键词，如 主人 修复 B站 表情包' },
+            limit: { type: 'number', description: '返回条数（默认 5，最多 8）' },
+          },
+          required: ['query'],
+        },
+        output,
+        async execute(args) {
+          const query = String(args?.query ?? '').trim();
+          if (!query) return { text: '请给一个检索词。' };
+          const tokens = queryTokens(query);
+          if (!tokens.length) return { text: '检索词太短，给个具体的关键词。' };
+          const snapshot = memoryCardSnapshot(undefined, { recordLimit: 500 });
+          const records = Array.isArray(snapshot?.records) ? snapshot.records : [];
+          const scored = [];
+          for (const rec of records) {
+            if (rec.sensitive === true) continue;
+            const hay = `${rec.title || ''} ${rec.text || ''} ${(rec.tags || []).join(' ')}`.toLowerCase();
+            let score = 0;
+            for (const t of tokens) if (t && hay.includes(t)) score += 1;
+            if (score > 0) scored.push({ rec, score });
+          }
+          scored.sort((a, b) => b.score - a.score
+            || (b.rec.pinned === true) - (a.rec.pinned === true)
+            || String(b.rec.date ?? '').localeCompare(String(a.rec.date ?? '')));
+          const limit = Math.max(1, Math.min(8, Number(args?.limit) || 5));
+          const top = scored.slice(0, limit);
+          if (!top.length) return { text: '记忆里没有找到相关内容。' };
+          const lines = top.map(({ rec }) => {
+            const day = String(rec.date ?? '').slice(0, 10);
+            const scopeTag = rec.scope === 'pet' ? '（仅私下知道）' : '';
+            return `- ${day}${rec.pinned ? ' [锚点]' : ''} ${rec.title || ''}：${String(rec.text || '').slice(0, 160)}${scopeTag}`;
+          });
+          return { text: `【记忆检索 · ${top.length} 条】\n${lines.join('\n')}` };
+        },
+      });
+      scope.tools.register({
+        name: 'memory_remember',
+        description: '把重要的事写进你自己的长期记忆（会自动脱敏+进整理队列）。明确被要求记住、或出现约定/偏好/计划/重要近况时用。',
+        parameters: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            text: { type: 'string', description: '要记住的事实（一句话，具体、可回忆）' },
+            title: { type: 'string', description: '可选：短标题' },
+            importance: { type: 'number', description: '重要度 20~100，默认 70' },
+          },
+          required: ['text'],
+        },
+        output,
+        async execute(args) {
+          const text = String(args?.text ?? '').trim();
+          if (text.length < 2) return { ok: false, text: '内容太短，没有记住。' };
+          const importance = Math.max(20, Math.min(100, Math.round(Number(args?.importance) || 70)));
+          const result = applyMemoryCardAction('add', {
+            text,
+            title: String(args?.title ?? text).slice(0, 40),
+            importance,
+            scope: 'qq',
+            tags: ['AI记录'],
+          }, {});
+          if (result?.ok === false) return { ok: false, text: `没记上：${String(result.error ?? '内容为空或重复')}` };
+          pluginLog('[memory] 模型写入记忆：', text.slice(0, 60));
+          return { ok: true, text: '已记进长期记忆。' };
+        },
+      });
+      pluginLog('[memory] 内置记忆工具已注册：memory_search / memory_remember');
+    } catch (error) {
+      pluginLog('[memory] 注册记忆工具失败：', String(error?.message ?? error));
+    }
+  };
+  try {
+    if (typeof ctx?.inject === 'function') ctx.inject(['tools'], install);
+    else install(ctx);
+  } catch (error) {
+    pluginLog('[memory] 延迟注册记忆工具失败：', String(error?.message ?? error));
+  }
+}
+
 export function apply(ctx) {
   ensureDirs();
   registerStickerTools(ctx);
+  registerMemoryTools(ctx);
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。

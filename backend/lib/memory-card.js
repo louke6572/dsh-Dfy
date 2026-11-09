@@ -172,6 +172,8 @@ export function memoryCardSnapshot(config = memoryCardConfig(), { recordLimit = 
       initialTier: record.initialTier || '',
       initialProbability: record.initialProbability || 0,
       firstMet: record.firstMet === true,
+      // memory_search（模型侧检索工具）需要按这个字段过滤敏感条目。
+      sensitive: record.sensitive === true,
     }));
   return {
     ok: true,

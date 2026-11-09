@@ -186,6 +186,11 @@ const SAFE_EXACT = new Set([
   //     模型只能回「表情包工具被拦下来」，功能全天不可用。
   'sticker_search',
   'sticker_send',
+  // 插件内置记忆工具（2026-11-09 「按需注入」改造）：memory_search 只读记忆卡
+  // （过滤 sensitive + pet 最私密层，返回条目摘要）；memory_remember 走
+  // addManualMemory 脱敏管线写卡。把记忆从「常驻注入」改为「模型按需检索」。
+  'memory_search',
+  'memory_remember',
 ])
 
 // 给「插件兼容性体检」读取的只读快照：不要在别处再抄一份白名单。

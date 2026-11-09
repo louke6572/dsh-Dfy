@@ -1109,6 +1109,12 @@ function loadConfig() {
 
   // 大肥鱼表情包配置（qq 配置的 stickers 段；不参与其它逻辑）
   cfg.stickers = file.stickers && typeof file.stickers === 'object' && !Array.isArray(file.stickers) ? file.stickers : {};
+  // 活人感（兜底 + 打字刹车；内置版原生实现的第一阶段）
+  cfg.humanize = {
+    cleanReply: true,   // 去掉英文草稿、"作为一个AI"、"希望对你有帮助"这类客服腔
+    burstBrake: true,   // 分段发到一半对方又说话了 → 剩下的不发
+    ...(file.humanize && typeof file.humanize === 'object' ? file.humanize : {})
+  };
 
   // socialV2.tools 需要与默认值深度合并：旧 config.json 若缺少新增工具开关，
   // 不能因为外层 spread 覆盖而丢失默认开关。
@@ -9181,7 +9187,39 @@ async function main(options = {}) {
     }
   }
 
+  // ── 活人感：兜底清洗 + 打字刹车（内置版第一阶段）──────────────────────
+  const burstCancelAt = new Map();
+  function humanizeReplyText(input) {
+    let text = String(input ?? '');
+    if (cfg.humanize?.cleanReply === false) return text;
+    // 模型英文草稿：Question: ... / Answer: ... —— 保留 Answer 之后，丢掉草稿
+    const lf = String.fromCharCode(10);
+    let lines = text.split(String.fromCharCode(13)).join('').split(lf);
+    const answerAt = lines.findIndex((line) => {
+      const low = line.trim().toLowerCase();
+      return low.startsWith('answer:') || low.startsWith('a:');
+    });
+    if (answerAt >= 0) {
+      const before = lines.slice(0, answerAt).join(lf).toLowerCase();
+      if (answerAt === 0 || before.includes('question:') || before.includes('q:')) {
+        lines = lines.slice(answerAt).map((line, index) => (index === 0 ? line.replace(/^\s*(?:answer|a)\s*[:：]\s*/i, '') : line));
+      }
+    }
+    text = lines.join(lf);
+    // 客服腔：逐词去掉（不用正则，避免转义踩坑）
+    for (const phrase of ['作为一个AI', '作为一个 ai', '作为人工智能', '作为语言模型', '作为一个语言模型', '作为AI助手', '作为一个助手',
+      '希望对你有帮助', '希望这些能帮到你', '希望我的回答对你有帮助', '希望这个回答对你有帮助', '如果还有其他问题', '还有什么可以帮到你']) {
+      text = text.split(phrase).join('');
+    }
+    // 连续 3 个空白压成一个
+    const spaces = String.fromCharCode(32);
+    const three = spaces + spaces + spaces;
+    while (text.includes(three)) text = text.split(three).join(spaces);
+    return text.trim();
+  }
+
   function sendToQQ(key, msg, opts = {}) {
+    msg = humanizeReplyText(msg);
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
@@ -9192,6 +9230,8 @@ async function main(options = {}) {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          const cancelAt = burstCancelAt.get(key);
+          if (cfg.humanize?.burstBrake !== false && cancelAt && cancelAt > burstStartedAt) { log(`[humanize] 对方又说话了，剩余分段不发 (${key})`); return; }
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
@@ -9381,8 +9421,9 @@ async function main(options = {}) {
     }
 
     const sent = [];
+    const burstStartedAt = Date.now();
     for (let i = 0; i < messages.length; i++) {
-      const msg = redactKnownTokensOnly(messages[i]);
+      const msg = humanizeReplyText(redactKnownTokensOnly(messages[i]));
       const isLast = i === messages.length - 1;
       sendChain = sendChain
         .then(async () => {
@@ -14986,6 +15027,7 @@ async function main(options = {}) {
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
+    if (cfg.humanize?.burstBrake !== false) burstCancelAt.set(key, Date.now());
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
     if (kind === 'group') void ensureGroupMeta(id);
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {

@@ -14,6 +14,12 @@ jobs:
         with:
           node-version: "22"
 
+      # 模块导入审计（module-import-audit）要真实加载 backend/src 模块：依赖 workspace 包
+      # dsh-dfy-core 和 js-yaml 等。干净 clone 不装依赖时它会整片报「Cannot find package」，
+      # CI 必红——以前工作流漏了安装这一步。
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
       # 入口文件显式点名（历史门禁契约：ci-audit 的 ④ 会检查这两行），
       # 再把全部 JS/MJS 过一遍解析 —— 以前只检查 4 个文件，src/、scripts/、lib/ui/*、
       # widget/tools/* 里的语法错误 CI 都看不到（新加的脚本尤其容易踩）。

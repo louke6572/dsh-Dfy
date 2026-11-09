@@ -59,6 +59,13 @@ jobs:
           node widget/tools/check-dead-settings.mjs
           node widget/tools/expr-smoke.mjs
 
+      # 纯逻辑边界：配置 normalize 对毒值组合不抛错且幂等（防「保存后变值」）；
+      # Token 防爆破守卫的边界与竞态不变式（防「拦多了/拦少了」回归）。
+      - name: 配置模糊与守卫边界审计
+        run: |
+          node widget/tools/config-fuzz-audit.mjs
+          node widget/tools/token-guard-audit.mjs
+
       # 出站安全不变式：所有发到 QQ 的文本必须收敛在收口函数里、群聊必须脱敏本机路径、
       # Markdown 图片行必须被剥离成图片段。2026-11 表情包把 C:\Users\… 发进群的事故护栏。
       - name: 出站安全审计

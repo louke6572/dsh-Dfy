@@ -12448,6 +12448,36 @@ async function main(options = {}) {
     setTimeout(() => { void purposeTick(); }, 8000).unref?.();
   }
 
+  // —— 运行日志/账本保底裁剪（盲区④「长期运行」）——
+  // token-usage.jsonl / tool-calls.jsonl / qq-activity.log 只增不减：跑几个月后
+  // 读取和磁盘都遭罪。启动时 + 每 6 小时裁一次，各保留最后一段
+  // （金额账本另有 ~/.dsh/.dshw-usage.json，不在这里）。
+  const RUNLOG_KEEP_LINES = 5000;
+  const ACTIVITY_KEEP_LINES = 3000;
+  const RUNLOG_TRIM_MIN_BYTES = 512 * 1024; // 小于 512KB 不值得动
+  function trimRunFile(file, keepLines) {
+    try {
+      const st = fs.statSync(file);
+      if (st.size < RUNLOG_TRIM_MIN_BYTES) return;
+      const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+      if (lines.length <= keepLines) return;
+      const tmp = `${file}.trim-${process.pid}`;
+      fs.writeFileSync(tmp, lines.slice(-keepLines).join('\n') + '\n');
+      fs.renameSync(tmp, file);
+      log(`运行日志已裁剪：${path.basename(file)} 保留最后 ${keepLines} 行（原 ${lines.length} 行）`);
+    } catch { /* 裁剪失败绝不影响主流程 */ }
+  }
+  function trimRunLogs() {
+    try {
+      trimRunFile(TOOL_LOG_FILE, RUNLOG_KEEP_LINES);
+      trimRunFile(TOKEN_USAGE_FILE, RUNLOG_KEEP_LINES);
+      trimRunFile(ACTIVITY_LOG, ACTIVITY_KEEP_LINES);
+    } catch { /* 同上 */ }
+  }
+  setTimeout(() => { try { trimRunLogs(); } catch {} }, 20_000).unref?.();
+  const runLogTrimTimer = setInterval(() => { try { trimRunLogs(); } catch {} }, 6 * 3600_000);
+  runLogTrimTimer.unref?.();
+
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
   function notePurposeOutbound(key, messages) {
     if (!purposeRun || purposeRun.key !== key) return;

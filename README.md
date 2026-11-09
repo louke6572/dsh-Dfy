@@ -329,7 +329,10 @@ node widget/tools/choice-options-audit.mjs  # 并列步骤候选不被静默裁�
 node widget/tools/check-dead-settings.mjs   # 「控件有值、没有消费方」初筛
 node widget/tools/expr-smoke.mjs            # 表情包清单 / 图片路由 / 配置键冒烟
 node widget/tools/z-layer-audit.mjs         # 浮层层级（z-index）登记检查
-node widget/tools/outbound-safety-audit.mjs # 出站安全：发送收口 / 群聊路径脱敏 / 图片行剥离 / 表情引用
+node widget/tools/outbound-safety-audit.mjs # 出站安全：发送收口 / 群聊路径脱敏 / 图片行剥离 / 表情引用 / 工具白名单对账
+node widget/tools/config-fuzz-audit.mjs     # 配置 normalize 模糊测试：毒值组合不抛错且幂等
+node widget/tools/token-guard-audit.mjs     # Token 防爆破守卫的边界与竞态不变式
+node widget/tools/live-endpoint-sweep.mjs   # 对运行中的服务做全端点真实巡检（需 DSH 在跑）
 ```
 
 除 `ci-audit.mjs` 完整版（会跑一次 `npm pack`）外，以上都是 0 依赖脚本，`npm install` 之前也能跑。

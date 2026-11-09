@@ -9189,6 +9189,8 @@ async function main(options = {}) {
 
   // ── 活人感：兜底清洗 + 打字刹车（内置版第一阶段）──────────────────────
   const burstCancelAt = new Map();
+  const incomingSeq = new Map();   // 每个会话收到消息的序号（判断「生成期间对方又说话了」）
+  const turnIncomingSeqByKey = new Map();
   function humanizeReplyText(input) {
     let text = String(input ?? '');
     if (cfg.humanize?.cleanReply === false) return text;
@@ -15027,6 +15029,9 @@ async function main(options = {}) {
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
+    const seqThisTurn = (incomingSeq.get(key) ?? 0) + 1;
+    incomingSeq.set(key, seqThisTurn);
+    turnIncomingSeqByKey.set(key, seqThisTurn);
     if (cfg.humanize?.burstBrake !== false) burstCancelAt.set(key, Date.now());
     // 群画像：成员数缓存用于小群/大群分层；失败不影响消息处理。
     if (kind === 'group') void ensureGroupMeta(id);
@@ -16112,6 +16117,7 @@ async function main(options = {}) {
               replayPendingWakeReasonsV2(key);
               if (ended.reason.kind === 'completed' && ended.text.trim()) {
                 const plain = mdToPlain(ended.text);
+                const turnIncomingSeq = turnIncomingSeqByKey.get(key) ?? 0;
                 // 纯 Markdown/空白输出按“无文本”处理，避免后续 planSocialTimeline 拿空串崩溃。
                 if (!plain.trim()) {
                   log(`agent 回复为空（仅格式/空白）(${key})`);
@@ -16141,6 +16147,16 @@ async function main(options = {}) {
                     }
                   }
                   continue;
+                }
+                // 活人感：生成期间对方又说话了（或撤回）→ 这条基于旧消息的回复不再发，
+                // 交给下一个回合按新内容重新回答。
+                if (cfg.humanize?.cancelOnNewMessage !== false) {
+                  const seqNow = incomingSeq.get(key) ?? 0;
+                  if (seqNow > turnIncomingSeq) {
+                    log(`[humanize] 生成期间对方又说话了，这条回复不发 (${key})`);
+                    appendActivity(`${key} [humanize] 生成期间对方又说话，旧回复作废`);
+                    continue;
+                  }
                 }
                 // 本回合已经通过 MCP 发送工具成功发出消息：跳过自动转发，避免重复发送。
                 if (sendToolSucceeded) {
@@ -16427,6 +16443,28 @@ async function main(options = {}) {
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
   });
+  // 活人感：撤回 → 还没发的分段/回复作废
+  const handleRecallNotice = (event) => {
+    try {
+      const kind = event?.group_id ? 'group' : 'private';
+      const id = event?.group_id ?? event?.user_id;
+      const key = convKey(kind, id);
+      incomingSeq.set(key, (incomingSeq.get(key) ?? 0) + 1);
+      burstCancelAt.set(key, Date.now());
+      const timers = social.pendingTimers.get(key);
+      if (timers) { for (const timer of timers) clearTimeout(timer); social.pendingTimers.delete(key); }
+      log(`[humanize] 撤回事件：${key} 未发的分段/回复作废`);
+      appendActivity(`${key} [humanize] 对方撤回，未发内容作废`);
+    } catch (error) {
+      log('[humanize] 撤回事件处理失败：', error?.message ?? error);
+    }
+  };
+  try {
+    bot.onNotice('group_recall', handleRecallNotice);
+    bot.onNotice('friend_recall', handleRecallNotice);
+  } catch (error) {
+    log('（撤回事件订阅不可用：' + (error?.message ?? error) + '）');
+  }
 
   // ── 上游健康：任何事件包都算「SnowLuma 还活着」，心跳还额外带接收链路健康度 ──
   // 用 onEvent 挂一个**旁路**订阅（不影响主链路）：

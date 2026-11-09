@@ -1924,6 +1924,20 @@ ${body}`;
       json(res, 200, { ...memoryCardSnapshot(config), removed });
       return;
     }
+    // 清空聊天流水：保留 锚点/初次相遇/日记/手动新增/已合并；其余（旧聊天记录）全部归档掉
+    if (action === 'purge-chatlog') {
+      const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });
+      const keepTags = new Set(['diary', 'merged', 'manual']);
+      const ids = (snapshot.records ?? []).filter((record) => !record.pinned && !record.firstMet
+        && !(record.tags ?? []).some((tag) => keepTags.has(tag))).map((record) => record.id);
+      let removed = 0;
+      for (const id of ids) {
+        const result = await applyMemoryCardAction('forget', { id }, { config });
+        if (result?.ok) removed += 1;
+      }
+      json(res, 200, { ...memoryCardSnapshot(config), removed });
+      return;
+    }
     // 整理预览：只做本地规则分析，不调模型、不改数据（告诉你会合并/清掉什么）
     if (action === 'organize-preview') {
       const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });

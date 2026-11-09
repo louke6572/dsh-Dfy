@@ -32,6 +32,14 @@ import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
 import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
 
 // 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
+function memoryRecordMode() {
+  try {
+    const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    return data?.memory?.recordMode === 'chatlog' ? 'chatlog' : 'facts';
+  } catch { return 'facts'; }
+}
+
 function nekoStickerConfig() {
   try {
     const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
@@ -542,6 +550,25 @@ function rememberConversation({ conversation, batch, reply }) {
     if (readUnified()?.config?.memoryCard?.enabled === false) return;
     const paths = activeMemoryPaths();
     const now = Date.now();
+    const factsMode = memoryRecordMode() !== 'chatlog';
+    // 事实模式：只记「明确让她记住 / 提到偏好计划约定」的那一条，且不记她的回复。
+    if (factsMode) {
+      const lastUser = [...batch].reverse().find((item) => !item.event?.isSelf);
+      const text = String(lastUser?.text ?? '');
+      if (!/(记住|记一下|记着|别忘|喜欢|讨厌|约定|答应|以后|生日|纪念日|名字|计划|打算|工作|学校|养了)/.test(text)) return;
+      appendMemoryInboxEvent(paths, {
+        at: now - 1,
+        platform: 'qq',
+        kind: conversation.isGroup ? 'group' : 'private',
+        sender: senderNameOf(lastUser.event),
+        senderId: String(lastUser.event?.senderUid ?? ''),
+        groupId: conversation.isGroup ? conversation.key : '',
+        direct: !conversation.isGroup,
+        conversationKey: `douyin:${conversation.key}`,
+        text,
+      });
+      return;
+    }
     // 只记最后两句，整批都写会把卡刷满；群聊里本来也只是被叫到的那几句。
     for (const item of batch.slice(-2)) {
       appendMemoryInboxEvent(paths, {

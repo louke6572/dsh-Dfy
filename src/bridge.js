@@ -15018,6 +15018,20 @@ async function main(options = {}) {
     promptQueues.clear();
   }
 
+  // 记忆方式：facts（默认）= 只记重要的事，不把聊天流水当记忆；chatlog = 旧行为。
+  const MEMORY_EXPLICIT = /(记住|记一下|记着|别忘了|写进记忆|保存到记忆|你记得|帮我记)/;
+  const MEMORY_FACT = /(喜欢|讨厌|不喜欢|打算|计划|约定|答应|以后|生日|纪念日|名字|叫我|工作|上班|学校|考试|考研|搬家|养了|生病|吃药|结婚|分手|在一起|习惯|忌口|过敏|梦想|害怕)/;
+  function memoryRecordMode() {
+    try { return loadConfig()?.memory?.recordMode === 'chatlog' ? 'chatlog' : 'facts'; } catch { return 'facts'; }
+  }
+  function memoryWorthRecording(text, { isOwner, direct }) {
+    if (memoryRecordMode() === 'chatlog') return true;
+    const body = String(text ?? '').trim();
+    if (MEMORY_EXPLICIT.test(body)) return true;
+    if (MEMORY_FACT.test(body) && body.length >= 6) return isOwner || direct;
+    return false;
+  }
+
   // 记忆卡原料：只把「值得记」的消息追加到 inbox，真正的评分/脱敏/遗忘在插件宿主里做。
   //   · 主人消息：全部记（私聊/群聊都记；scope 在插件侧固定为 qq，不会带去 B站）。
   //   · 群友消息：只记直接对她说、引用她、或明显有情绪/约定/道歉的，避免把整个群搬进记忆。
@@ -15032,6 +15046,8 @@ async function main(options = {}) {
         if (kind === 'group' && !direct && !looksNoteworthyMessage(text, { names: [selfNickname, readRoleState().role] })) return;
         if (kind === 'private' && text.length < 8) return;
       }
+      // 默认只记「重要的事」：明确让她记、或提到偏好/约定/计划/近况；不把每条闲聊搬进记忆。
+      if (!memoryWorthRecording(text, { isOwner, direct })) return;
       appendMemoryInboxEvent(MEMORY_CARD_PATHS, {
         at: Date.now(),
         kind: kind === 'private' ? 'private' : 'group',
@@ -15051,6 +15067,8 @@ async function main(options = {}) {
   // 她自己的发言：写进记忆 inbox；插件会尽量并进最近一条主人记录（一问一答）。
   function recordSelfMemoryEvent(key, text) {
     try {
+      // 默认不把她的回复写进记忆：回复是聊天记录，不是需要长期记住的事实。
+      if (memoryRecordMode() !== 'chatlog') return;
       const body = String(text ?? '').trim();
       if (!body) return;
       if (/^⚠️|^⏳|^⏹️|^❓|^🔐/.test(body)) return; // 系统提示，不是她的话

@@ -9177,7 +9177,9 @@ async function main(options = {}) {
     try {
       const nowCfg = loadConfig();
       const stickerCfg = nowCfg.stickers ?? {};
-      if (stickerCfg.enabled !== true) return;   // 默认关：改用 dsh-nekowhale-stickers 插件（MCP/工具）
+      if (stickerCfg.enabled === false) return;   // 默认开；面板里可关
+      // 本轮回复里已经有表情插件（dsh-nekowhale-stickers）的 Markdown 图 → 自动配图让位，避免两张
+      if (/!\[[^\]]*\]\([^)]+\)/.test(String(text ?? ''))) return;
       if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
       nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
       const result = await nekoStickers.afterReply({

@@ -48,7 +48,8 @@ function nekoInstance() {
 
 async function maybeSendDouyinSticker(event, text) {
   const cfg = nekoStickerConfig();
-  if (cfg.enabled !== true) return;   // 默认关：改用成熟表情插件
+  if (cfg.enabled === false) return;   // 默认开；面板里可关
+  if (/!\[[^\]]*\]\([^)]+\)/.test(String(text ?? ''))) return;   // 已用成熟表情插件发图则让位
   try {
     const neko = nekoInstance();
     const sdk = await loadSdk();

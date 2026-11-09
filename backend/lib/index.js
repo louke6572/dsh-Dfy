@@ -489,7 +489,7 @@ export function apply(ctx) {
     routeBOn: () => {
       try { return astrbotApi.getRouteB().on === true; } catch { return false; }
     },
-    askBrain: (text) => rawChat.ask(text),
+    askBrain: (text, key) => rawChat.ask(text, { key }),
     sendQq: (args) => sendQqPrivate(args),
   });
 

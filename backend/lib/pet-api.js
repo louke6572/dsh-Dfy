@@ -300,21 +300,29 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
       const key = ownerKey();
       if (!key) { json(res, 409, { ok: false, error: '还没配置主人 QQ，无法从桌宠发送' }); return; }
       const owner = chat.ownerInfo?.() || {};
-      // 路线 B：内置桥按设计停着，消息卡不能再去敲 3100（那样只会得到 fetch failed）。
-      // 改成：灌给同一个大脑（DSH 会话 dfy-astrbot）→ 回复直接用 SnowLuma OneBot 发回主人 QQ。
+      // 优先内置桥：卡片消息 = 主人来信（owner-message），投进「QQ 私聊 · 主人」同一个
+      // DSH 会话 —— 侧栏可见、上下文与 QQ 窗口连续、回复由桥接自动转发并镜像回卡片。
+      // （以前先看 routeBOn：路线 B 的残留状态会让内置模式下卡片消息被误投进
+      //   dfy-astrbot 内部会话 —— QQ 窗口出现回复但会话里没有、侧栏也找不到。）
+      // 只有桥接真没接住（路线 B 接管、内置桥已停）才走「大脑直答 + SnowLuma 直发」。
+      const entry = pushQqMessage({ role: 'user', sender: owner.name || '主人', text, key });
+      const queued = await callBridge('/api/pet/owner-message', { method: 'POST', body: { key, text }, timeoutMs: 12000 });
+      if (queued.ok && queued.data?.ok) {
+        json(res, 200, { ok: true, message: entry, queued: true, via: 'bridge' });
+        return;
+      }
       const viaRouteB = typeof routeBOn === 'function' && routeBOn() === true;
       if (viaRouteB) {
         if (typeof askBrain !== 'function' || typeof sendQq !== 'function') {
           json(res, 503, { ok: false, error: '路线 B 已接管 QQ，但大脑/发信通道还没就绪（重启 DSH 后再试）' });
           return;
         }
-        const entry = pushQqMessage({ role: 'user', sender: owner.name || '主人', text, key });
         const uin = key.startsWith('private:') ? key.slice('private:'.length) : '';
         // 关键：**先回 200 再干活**。DSH 跑一轮模型要 5~10 秒，同步等会让消息卡片卡住；
         // 卡片的回复本来就走事件推送（pushQqMessage → chat.emit），不需要等这个 HTTP 返回。
         void (async () => {
           try {
-            const reply = await askBrain(text);
+            const reply = await askBrain(text, key);
             if (!reply) {
               pushQqMessage({ role: 'assistant', sender: owner.name || '主人', text: '（她这轮没产出文本）', key });
               return;
@@ -332,13 +340,7 @@ export function createPetApiService({ chat, purpose, petService, stateDir, petRo
         json(res, 200, { ok: true, message: entry, queued: true, via: 'route-b' });
         return;
       }
-      const queued = await callBridge('/api/pet/owner-message', { method: 'POST', body: { key, text }, timeoutMs: 12000 });
-      if (!queued.ok || !queued.data?.ok) {
-        json(res, 502, { ok: false, error: queued.data?.error || queued.error || '桥接不可达' });
-        return;
-      }
-      const entry = pushQqMessage({ role: 'user', sender: owner.name || '主人', text, key });
-      json(res, 200, { ok: true, message: entry, queued: true });
+      json(res, 502, { ok: false, error: queued.data?.error || queued.error || '桥接不可达' });
       return;
     }
     if (req.method === 'POST' && suffix === '/chat') {

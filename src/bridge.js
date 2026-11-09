@@ -3259,8 +3259,8 @@ async function main(options = {}) {
     allowRemote: cfg.dsh.allowRemote === true
   });
   // DSH 的模型目录 RPC：0.1.5 是 `session/modelCatalog`。**不能走基类门面**
-  // `api.sessions.modelCatalog` —— 桥接钉住的 `@deepseek-ai/dsh-host-apiproxy@0.1.1-rc.2`
-  // 的 sessions 门面里根本没有这个方法（只有 `models` → 已下线的 `session/models`），
+  // `api.sessions.modelCatalog` —— 桥接保留的历史 sessions 门面
+  // 里没有这个方法（只有 `models` → 已下线的 `session/models`），
   // 调用会抛 “api.sessions.modelCatalog is not a function”，让思考强度档位静默退回内置清单。
   // 这里直接用桥接自己覆写的 callUnary（它本来就是为「不依赖旧版客户端域方法」而存在的），
   // 并保留一次 `session/models` 回落以兼容更老的 DSH。

@@ -31,6 +31,11 @@ jobs:
       - name: 构建产物与源一致
         run: node build.mjs --check
 
+      - name: DSH 依赖隔离与协议回归
+        run: |
+          npm ci --ignore-scripts
+          npm run test:dsh-compat
+
       # 版本号是单一真相（根 package.json）；README 横幅 / AGENT 汇报模板 /
       # CHANGELOG 小节 / tag 与它不一致都算漂移。不需要装依赖。
       - name: 版本一致性

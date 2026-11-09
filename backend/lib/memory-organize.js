@@ -18,7 +18,8 @@ import {
 } from './memory-card.js';
 import { readUnified } from './store.js';
 
-const MAX_INPUT = 60;
+const MAX_INPUT = 400;
+const CHUNK_SIZE = 50; // 每次模型调用最多整理 50 条，选多了自动分批
 const MAX_DROP_RATIO = 0.3;
 const MAX_MERGES = 20;
 const MODEL_TIMEOUT_MS = 45_000;
@@ -36,7 +37,7 @@ function normalizeForDedupe(text) {
 const SYSTEM_PROMPT = [
   '你在整理一个虚拟角色的长期记忆卡。输入是她最近一段时间攒下的记忆条目，大量是闲聊、寒暄、重复的半句话。',
   '',
-  '任务：把记忆变干净，而不是变少：',
+  '任务：把记忆变干净：能合并的尽量合并，纯噪音删掉，重要事实保留。',
   '- 同一件事的多条记录 → 合并成一条准确的事实；',
   '- 纯寒暄 / 单个表情 / 无信息量的碎句 / 完全重复 → 可以删除；',
   '- 主人的偏好、约定、重要事件、关系变化、情绪转折、初次相遇 → 必须保留（可以合并但不要丢）。',
@@ -47,7 +48,7 @@ const SYSTEM_PROMPT = [
   '',
   '规则：',
   '- 只能使用输入里出现过的 id；输出别的 id 会让整批作废。',
-  '- 一次最多合并 8 组，宁少勿多；每组 2~4 条 id。',
+  '- 尽量合并：同一话题、同一件事、语义重复、时间相邻的碎句都可以合并；一次输出 3~12 组，每组 2~5 条 id。',
   '- 不确定就保留。不要为了“整洁”删掉可能有用的信息。',
   '- 合并后的 text 用陈述句写事实，不要写“用户说”“对方表示”。',
   '- drop 总数不超过输入的 30%；没有要改的就输出 {"merge":[],"drop":[]}。',
@@ -332,88 +333,90 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
     const records = candidates(config, ids);
     if (records.length < 2) return { ok: false, error: '可整理的记录太少（至少 2 条）' };
 
-    let data = null;
-    let partial = false;
-    let lastError = '';
-    let lastRaw = '';
-    const baseUser = `共 ${records.length} 条待整理：\n${formatRecords(records)}`;
-    log(`[memory-organize] 开始整理 ${records.length} 条（最多 60 条/次）`);
-    // 三种打法：标准 → 严格（温度 0）→ 精简（强制缩短输出，避免被 maxTokens 截断）。
-    const plans = [
-      { label: '标准', user: baseUser, temperature: 0.2, maxTokens: 3000 },
-      { label: '严格', user: `${baseUser}\n\n重要：只输出一个 JSON 对象，不要任何解释、不要 Markdown；输出必须是完整 JSON。`, temperature: 0, maxTokens: 3000 },
-      { label: '精简', user: `${baseUser}\n\n最多合并 5 组；每组 text ≤50 字；不要 tags；只输出完整 JSON。`, temperature: 0, maxTokens: 4000 },
-    ];
-    for (const plan of plans) {
-      try {
-        const text = await Promise.race([
-          complete({ system: SYSTEM_PROMPT, user: plan.user, temperature: plan.temperature, maxTokens: plan.maxTokens }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('整理模型调用超时（45 秒）')), MODEL_TIMEOUT_MS)),
-        ]);
-        lastRaw = text;
-        const parsed = parseModelJson(text);
-        data = parsed.data;
-        partial = parsed.partial;
-        if (partial) log(`[memory-organize] ${plan.label}：JSON 被截断，已抢救出完整条目继续整理`);
-        if (data) break;
-      } catch (error) {
-        lastError = String(error?.message ?? error).slice(0, 160);
-        log(`[memory-organize] ${plan.label}失败：${lastError}｜模型原文：${short(lastRaw, 240)}`);
-      }
-    }
-    if (!data) {
-      // 模型不配合时，做本地合并/去重（同一会话相邻碎片 + 同文 + 纯寒暄），让按钮有实际结果。
-      const local = await applyLocalMerge(records, config);
-      const note = `模型没返回可用 JSON（已试 ${plans.length} 次），已做本地合并/去重`;
-      log(`[memory-organize] ${note}：合并 ${local.merged} 组，删除 ${local.dropped} 条`);
-      return {
-        ok: true,
-        before: records.length,
-        after: Math.max(0, records.length - local.dropped + local.merged),
-        merged: local.merged,
-        dropped: local.dropped,
-        archived: local.archived,
-        local: true,
-        note,
-      };
-    }
+    const chunks = [];
+    for (let i = 0; i < records.length; i += CHUNK_SIZE) chunks.push(records.slice(i, i + CHUNK_SIZE));
+    log(`[memory-organize] 开始整理 ${records.length} 条，分 ${chunks.length} 批（每批最多 ${CHUNK_SIZE} 条）`);
 
-    const known = new Set(records.map((record) => String(record.id)));
     const merges = [];
     const drops = [];
-    for (const row of Array.isArray(data.merge) ? data.merge : []) {
-      const list = (Array.isArray(row?.ids) ? row.ids : []).map(String).filter((id) => known.has(id));
-      const title = short(row?.title, 40);
-      const body = short(row?.text, 200);
-      if (list.length < 2 || !body) continue;
-      const importance = Number(row?.importance);
-      merges.push({
-        ids: list,
-        title: title || body.slice(0, 30),
-        text: body,
-        tags: (Array.isArray(row?.tags) ? row.tags : []).map((tag) => short(tag, 12)).filter(Boolean).slice(0, 8),
-        importance: Number.isFinite(importance) ? Math.max(1, Math.min(100, Math.round(importance))) : 60,
-      });
-      if (merges.length >= MAX_MERGES) break;
+    const used = new Set();
+    let partial = false;
+    let modelFailed = 0;
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const known = new Set(chunk.map((record) => String(record.id)));
+      const baseUser = `这是第 ${index + 1}/${chunks.length} 批，共 ${chunk.length} 条待整理：\n${formatRecords(chunk)}`;
+      let data = null;
+      let lastRaw = '';
+      let lastError = '';
+      const plans = [
+        { label: '标准', user: baseUser, temperature: 0.2, maxTokens: 3000 },
+        { label: '严格', user: `${baseUser}\n\n重要：只输出一个 JSON 对象，不要任何解释、不要 Markdown；输出必须是完整 JSON。`, temperature: 0, maxTokens: 3000 },
+        { label: '精简', user: `${baseUser}\n\n最多合并 8 组；每组 text ≤50 字；不要 tags；只输出完整 JSON。`, temperature: 0, maxTokens: 4000 },
+      ];
+      for (const plan of plans) {
+        try {
+          const text = await Promise.race([
+            complete({ system: SYSTEM_PROMPT, user: plan.user, temperature: plan.temperature, maxTokens: plan.maxTokens }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('整理模型调用超时（45 秒）')), MODEL_TIMEOUT_MS)),
+          ]);
+          lastRaw = text;
+          const parsed = parseModelJson(text);
+          data = parsed.data;
+          partial = partial || parsed.partial;
+          if (parsed.partial) log(`[memory-organize] 第 ${index + 1} 批（${plan.label}）：JSON 被截断，已抢救完整条目`);
+          if (data) break;
+        } catch (error) {
+          lastError = String(error?.message ?? error).slice(0, 160);
+          log(`[memory-organize] 第 ${index + 1} 批（${plan.label}）失败：${lastError}`);
+        }
+      }
+      if (!data) {
+        // 这一批模型不配合：只对这一批做本地合并/去重，不影响其它批。
+        const local = await applyLocalMerge(chunk, config);
+        modelFailed += 1;
+        log(`[memory-organize] 第 ${index + 1} 批模型失败，本地合并 ${local.merged} 组、删除 ${local.dropped} 条`);
+        continue;
+      }
+
+      for (const row of Array.isArray(data.merge) ? data.merge : []) {
+        const list = (Array.isArray(row?.ids) ? row.ids : []).map(String).filter((id) => known.has(id) && !used.has(id));
+        const title = short(row?.title, 40);
+        const body = short(row?.text, 200);
+        if (list.length < 2 || !body) continue;
+        for (const id of list) used.add(id);
+        const importance = Number(row?.importance);
+        merges.push({
+          ids: list,
+          title: title || body.slice(0, 30),
+          text: body,
+          tags: (Array.isArray(row?.tags) ? row.tags : []).map((tag) => short(tag, 12)).filter(Boolean).slice(0, 8),
+          importance: Number.isFinite(importance) ? Math.max(1, Math.min(100, Math.round(importance))) : 60,
+        });
+      }
+      for (const rawId of Array.isArray(data.drop) ? data.drop : []) {
+        const id = String(rawId);
+        if (known.has(id) && !used.has(id)) { used.add(id); drops.push(id); }
+      }
     }
-    for (const rawId of Array.isArray(data.drop) ? data.drop : []) {
-      const id = String(rawId);
-      if (known.has(id)) drops.push(id);
-    }
-    // 删除上限：宁可留脏，不可误删。
+
+    // 删除上限：按整次整理的总条数算 30%，宁可留脏不可误删。
     const dropLimit = Math.max(1, Math.floor(records.length * MAX_DROP_RATIO));
     const finalDrops = drops.slice(0, dropLimit);
     if (!merges.length && !finalDrops.length) {
-      return { ok: true, before: records.length, after: records.length, merged: 0, dropped: 0, archived: 0, partial, note: partial ? '模型输出被截断，没有可用的完整条目' : '模型认为不需要整理' };
+      return {
+        ok: true, before: records.length, after: records.length, merged: 0, dropped: 0, archived: 0, partial,
+        note: modelFailed ? `有 ${modelFailed} 批模型失败，已本地兜底；其余批次不需要整理` : '模型认为不需要整理',
+      };
     }
 
     let merged = 0;
     let dropped = 0;
     let archived = 0;
     let removedTotal = 0;
-    // 合并结果沿用原记录的 scope（含 pet 时保持 pet），避免把公开平台经历改写成 QQ 私聊。
-    const scopeForIds = (ids) => {
-      const scopes = ids
+    const scopeForIds = (list) => {
+      const scopes = list
         .map((id) => records.find((record) => String(record.id) === String(id)))
         .filter(Boolean)
         .map((record) => String(record.scope || 'qq'));
@@ -440,16 +443,16 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
       const result = await applyMemoryCardAction('forget', { id }, { config });
       if (result?.ok) { dropped += 1; archived += Number(result.archived) || 0; removedTotal += 1; }
     }
-    log(`[memory-organize] 整理完成：合并 ${merged} 组、删除 ${dropped} 条（输入 ${records.length} 条${partial ? '，输出被截断' : ''}）`);
+    log(`[memory-organize] 整理完成：合并 ${merged} 组、删除 ${dropped} 条（输入 ${records.length} 条，${chunks.length} 批）`);
     return {
       ok: true,
       before: records.length,
-      // after 按实际归档条数算；之前用 merged*2 估算，一组合并 3 条以上时数字会错。
       after: Math.max(0, records.length - removedTotal),
       merged,
       dropped,
       archived,
       partial,
+      chunks: chunks.length,
       note: partial ? '模型输出被截断，只应用了能完整解析的部分' : '',
     };
   }

@@ -96,6 +96,7 @@ import { synthesizeEdgeToFile } from '../../src/voice-edge-tts.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../src/gate-events.js';
 import { normalizeAllowlist } from '../../src/allowlist.js';
+import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
 import { hardenFile } from '../../src/state-acl.mjs';
 import { createPetService } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
@@ -4696,6 +4697,25 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/modules`) { await handleModules(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/douyin`)) { await handleDouyin(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/tieba`)) { await handleTieba(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/sticker/test`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      try {
+        const body = await readJsonBody(req);
+        const qqCfg = readQqConfig().config ?? {};
+        const stickers = qqCfg.stickers ?? {};
+        const adminQQ = String(readUnified().config.admin?.qq ?? qqCfg.ownerQQ ?? '').trim();
+        if (!/^\d{5,15}$/.test(adminQQ)) throw new Error('还没设置管理员 QQ（设置 → 平台 → QQ），测试表情需要发到你的私聊');
+        const neko = createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log: pluginLog });
+        const text = String(body.text ?? '测试一下表情').trim().slice(0, 200);
+        const item = await neko.pick(text, { excludeEmotions: stickers.excludeEmotions ?? [], minScore: 1 });
+        if (!item) throw new Error('没有匹配到表情（换个说法，或先用「/表情自检」检查清单）');
+        const result = await neko.send({ httpUrl: qqCfg.snowluma?.httpUrl, token: qqCfg.snowluma?.accessToken, key: `private:${adminQQ}`, item });
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        json(res, 500, { ok: false, error: String(error?.message ?? error) });
+      }
+      return;
+    }
     if (pathname === `${API_PREFIX}/compat/scan`) {
       try {
         let version = '';

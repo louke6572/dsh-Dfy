@@ -35,6 +35,7 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { createNekoStickers } from './nekowhale-stickers.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -1105,6 +1106,9 @@ function loadConfig() {
       ...(file.socialV2 ?? {})
     }
   };
+
+  // 大肥鱼表情包配置（qq 配置的 stickers 段；不参与其它逻辑）
+  cfg.stickers = file.stickers && typeof file.stickers === 'object' && !Array.isArray(file.stickers) ? file.stickers : {};
 
   // socialV2.tools 需要与默认值深度合并：旧 config.json 若缺少新增工具开关，
   // 不能因为外层 spread 覆盖而丢失默认开关。
@@ -9151,6 +9155,28 @@ async function main(options = {}) {
     } catch {}
   }
 
+  // 大肥鱼表情包：回复后按配置自动补一张（内置版专用；配置在 qq 配置的 stickers 段）
+  let nekoStickers = null;
+  async function sendNekoAfterReply(key, text) {
+    try {
+      const nowCfg = loadConfig();
+      const stickerCfg = nowCfg.stickers ?? {};
+      if (stickerCfg.enabled === false) return;   // 默认开启；面板里可关
+      if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
+      nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
+      const result = await nekoStickers.afterReply({
+        key,
+        text: String(text ?? ''),
+        httpUrl: nowCfg.snowluma?.httpUrl,
+        token: nowCfg.snowluma?.accessToken,
+        config: stickerCfg,
+      });
+      if (result) log(`[neko] 已补一张表情：${result.name}（${result.emotion || '无情绪'}）`);
+    } catch (error) {
+      log(`[neko] 表情补发失败：${error?.message ?? error}`);
+    }
+  }
+
   function sendToQQ(key, msg, opts = {}) {
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
@@ -16127,6 +16153,7 @@ async function main(options = {}) {
                     await sendBurstToQQ(key, messages, cfg.social);
                   } else {
                     await sendToQQ(key, messages[0]);
+                    void sendNekoAfterReply(key, messages[0]);
                   }
                   // 发言后刷新活跃时间，并调度可能的二次补刀
                   const st = socialState(key);
@@ -16175,16 +16202,19 @@ async function main(options = {}) {
                       } catch (error) {
                         log(`带 @ 发送失败，退回普通发送 (${key}): ${error?.message ?? error}`);
                         await sendToQQ(key, body);
+                      void sendNekoAfterReply(key, body);
                       }
                     } else {
                       log(`agent 回复 (${key}) ${plain.length} 字（主动搭话，没 @ 人）`);
                       appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
                       await sendToQQ(key, plain);
+                    void sendNekoAfterReply(key, plain);
                     }
                   } else {
                     log(`agent 回复 (${key}) ${plain.length} 字`);
                     appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
                     await sendToQQ(key, plain);
+                    void sendNekoAfterReply(key, plain);
                   }
                 }
               } else if (ended.reason.kind === 'error') {

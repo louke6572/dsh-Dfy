@@ -524,6 +524,7 @@ function douyinPersonaBlock() {
       core,
       identity: buildPersonaIdentity({ name: personaNameFromCard(core, cur?.name || '这个角色'), owner: ownerDisplayName() }),
       tone: readPersonaLayerText('tone'),
+      examples: readPersonaLayerText('examples'),
       daily: readPersonaLayerText('daily'),
       mode: 'v2',
       maxChars: 6000,

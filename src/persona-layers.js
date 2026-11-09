@@ -60,6 +60,7 @@ function stripAuthoringNotes(text) {
  * @param {string} [opts.scene] 场景
  * @param {string} [opts.daily] 日常
  * @param {string} [opts.tone] 语气
+ * @param {string} [opts.examples] 对话语料（few-shot 示例，单独成层，避免撑大核心）
  * @param {string} [opts.identity] 身份底座（无论 tone/full 都带：我是谁、主人是谁）
  * @param {'full'|'tone'} [opts.personaMode] full=核心+语气+场景+日常；tone=语气+场景+日常
  * @param {'v1'|'v2'} [opts.mode] 仿真模式；每层分别过滤 〔一代〕/〔二代〕小节
@@ -67,13 +68,14 @@ function stripAuthoringNotes(text) {
  * @param {string} [opts.sceneId] 场景 ID（用于标题）
  */
 export function composePersonaLayers({
-  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
+  core = '', scene = '', daily = '', tone = '', examples = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
   // 先剥作者注释，再做层间去重：两张层文件内容一模一样时（模板/迁移常见），
   // 重复注入就是纯烧 token——2026-11-09 实测同一份人格+语料被整段注入两遍。
   const coreText = stripAuthoringNotes(selectRoleText(core, mode));
   const toneText = stripAuthoringNotes(selectRoleText(tone, mode));
+  const examplesText = stripAuthoringNotes(selectRoleText(examples, mode));
   const sceneText = stripAuthoringNotes(selectRoleText(scene, mode));
   const dailyText = stripAuthoringNotes(selectRoleText(daily, mode));
   // tone 模式不加载核心；只有旧角色既没有语气也没有场景/日常时，才回退核心，避免“没卡”。
@@ -89,6 +91,7 @@ export function composePersonaLayers({
     ...identitySection,
     ...coreSection,
     section('tone', '人格语气', toneText),
+    section('examples', '对话语料', examplesText),
     section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
     section('daily', '人格日常', dailyText),
   ]
@@ -97,7 +100,7 @@ export function composePersonaLayers({
     // 模板/迁移常把 core 原样复制进 tone，重复注入就是纯烧 token。
     .filter((x, i, arr) => arr.findIndex((y) => y.text === x.text) === i);
 
-  const counts = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
+  const counts = { identity: 0, core: 0, tone: 0, examples: 0, scene: 0, daily: 0 };
   const omitted = [];
   if (!selected.length && personaMode === 'tone' && String(core ?? '').trim()) {
     const fallback = selectRoleText(core, mode);

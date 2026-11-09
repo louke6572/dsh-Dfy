@@ -124,6 +124,7 @@ function personaCardBlock() {
     }),
     // 语气层：B站 也要按同一个说话方式，不能只 QQ 有。
     tone: readPersonaLayerText('tone'),
+    examples: readPersonaLayerText('examples'),
     scene: readPersonaLayerText('scene', 'bili'),
     daily: readPersonaLayerText('daily'),
     mode: 'v2',

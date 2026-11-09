@@ -128,7 +128,7 @@ import { createPersonaClassifier } from './persona-classify.js';
 import { personaSnapshot, setPersonaMood, setPersonaQuirks } from '../../src/persona-state.js';
 import { createLearningLoop } from './learning-loop.js';
 import { createMemoryOrganizer } from './memory-organize.js';
-import { syncPersonaSystemPreset } from './preset-sync.mjs';
+import { syncPersonaSystemPreset, personaPresetStatus } from './preset-sync.mjs';
 import { rollbackAutoPersona } from '../../src/learning-profile.js';
 
 // 版本号对外只有一个来源：合并后的 dsh-Dfy 主包（plugins/surfcore-next/package.json）。
@@ -1926,9 +1926,10 @@ ${body}`;
         core: layers.core || resolvePersonaFile(),
         daily: layers.daily,
         tone: layers.tone,
+        examples: layers.examples,
         scenes: layers.scenes,
         scenesDir: layers.scenesDir,
-      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
+      } : { core: resolvePersonaFile(), daily: '', tone: '', examples: '', scenes: {}, scenesDir: '' };
     };
     const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
@@ -1949,12 +1950,15 @@ ${body}`;
         layers: {
           core: { path: paths.core, text: core, chars: core.length },
           tone: { path: paths.tone, text: readTextFile(paths.tone), chars: readTextFile(paths.tone).length },
+          examples: { path: paths.examples, text: readTextFile(paths.examples), chars: readTextFile(paths.examples).length },
           daily: { path: paths.daily, text: daily, chars: daily.length },
           scenes,
         },
         sceneLabels,
         backups,
-        note: '人格卡分层：persona.md 是核心；persona.tone.md 是语气；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
+        // 设置页要显示「人格有没有进 Agent 预设、要不要重启」。
+        presetSync: (() => { try { return personaPresetStatus(); } catch (error) { return { ok: false, error: String(error?.message ?? error) }; } })(),
+        note: '人格卡分层：persona.md 是核心（身份+底线）；persona.tone.md 是行为规则；persona.examples.md 是对话语料；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
       });
       return;
     }
@@ -1969,6 +1973,7 @@ ${body}`;
       let label = 'persona';
       if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
       else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
+      else if (name.startsWith('persona-examples-')) { target = paths.examples; label = 'persona-examples'; }
       else if (name.startsWith('persona-scene-')) {
         const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
         if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
@@ -1992,6 +1997,9 @@ ${body}`;
     if (layer === 'tone') {
       target = paths.tone;
       label = 'persona-tone';
+    } else if (layer === 'examples') {
+      target = paths.examples;
+      label = 'persona-examples';
     } else if (layer === 'daily') {
       target = paths.daily;
       label = 'persona-daily';

@@ -320,6 +320,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       identity: buildPersonaIdentity({ name: personaNameFromCard(personaCore, cur?.name || '这个角色'), owner: ownerInfo().name }),
       // 语气层：桌宠也用同一套说话方式。
       tone: readPersonaLayerText('tone'),
+      examples: readPersonaLayerText('examples'),
       scene: readPersonaLayerText('scene', 'pet'),
       daily: readPersonaLayerText('daily'),
       mode: 'v2',

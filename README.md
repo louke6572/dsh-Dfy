@@ -1,6 +1,6 @@
 # dsh-Dfy
 
-> DeepSeek Harness（DSH）的桌宠与挂件套件 · `v0.9.0`
+> DeepSeek Harness（DSH）的桌宠与挂件套件 · `v0.7.6`
 
 小鲸鱼余额挂件 + 桌宠（106 段透明动画）+ QQ 消息卡，QQ / B站 / 双向脱敏记忆由包内自带的 SurfCore 提供。
 

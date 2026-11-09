@@ -88,11 +88,12 @@ function copyFile(src, dest) {
   return true;
 }
 
-/** 复制核心/日常/场景三层人格文件（不存在的层跳过）。 */
+/** 复制核心/日常/语气/语料/场景各层人格文件（不存在的层跳过）。 */
 function copyPersonaLayers(paths, fixtureRoot) {
   copyFile(paths.persona, path.join(fixtureRoot, 'persona.md'));
   copyFile(paths.personaDaily, path.join(fixtureRoot, 'persona.daily.md'));
   copyFile(paths.personaTone, path.join(fixtureRoot, 'persona.tone.md'));
+  copyFile(paths.personaExamples, path.join(fixtureRoot, 'persona.examples.md'));
   for (const [scene, file] of Object.entries(paths.personaScenes || {})) {
     copyFile(file, path.join(fixtureRoot, 'persona.scenes', `${scene}.md`));
   }
@@ -137,6 +138,8 @@ export function characterPaths(id) {
     persona: path.join(dir, 'persona.md'),
     personaDaily: path.join(dir, 'persona.daily.md'),
     personaTone: path.join(dir, 'persona.tone.md'),
+    // 语料层（few-shot）：一大段示例对话单独放，避免把核心人格撑成好几千字。
+    personaExamples: path.join(dir, 'persona.examples.md'),
     personaScenesDir: path.join(dir, 'persona.scenes'),
     personaScenes: {
       'qq-group': path.join(dir, 'persona.scenes', 'qq-group.md'),
@@ -219,9 +222,13 @@ export function readPersonaLayerText(kind = 'core', scene = '') {
   if (!layers) return '';
   const file = kind === 'daily'
     ? layers.daily
-    : kind === 'scene'
-      ? (layers.scenes?.[scene] || '')
-      : layers.core;
+    : kind === 'tone'
+      ? layers.tone
+      : kind === 'examples'
+        ? layers.examples
+        : kind === 'scene'
+          ? (layers.scenes?.[scene] || '')
+          : layers.core;
   try { return file ? fs.readFileSync(file, 'utf8') : ''; } catch { return ''; }
 }
 
@@ -235,6 +242,7 @@ export function activePersonaLayers() {
     core: p.persona,
     daily: p.personaDaily,
     tone: p.personaTone,
+    examples: p.personaExamples,
     scenesDir: p.personaScenesDir,
     scenes: p.personaScenes,
   };
@@ -611,6 +619,7 @@ export function restoreSnapshot(id, slot, { now = Date.now() } = {}) {
   copyFile(path.join(source, 'persona.md'), paths.persona);
   copyFile(path.join(source, 'persona.daily.md'), paths.personaDaily);
   copyFile(path.join(source, 'persona.tone.md'), paths.personaTone);
+  copyFile(path.join(source, 'persona.examples.md'), paths.personaExamples);
   try {
     for (const entry of fs.readdirSync(path.join(source, 'persona.scenes'), { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;

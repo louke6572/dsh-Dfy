@@ -14,7 +14,7 @@
  * 不存在时（CI / 全新 clone）构建脚本按基础版（安全规则）产出，行为不变。
  */
 import fs from 'node:fs';
-import { buildPatches, PERSONA_SNAPSHOT_FILE } from '../../scripts/build-agent-preset-patches.mjs';
+import { buildPatches, patchFileFor, PRESETS, PERSONA_SNAPSHOT_FILE } from '../../scripts/build-agent-preset-patches.mjs';
 import { composePersonaLayers } from '../../src/persona-layers.js';
 import { activePersonaFile, readCurrentCharacter, readPersonaLayerText } from '../../src/character-persona.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
@@ -36,6 +36,7 @@ export function composePersonaSystemPrompt({ ownerName = '主人', maxChars = 12
   const composed = composePersonaLayers({
     core: personaCore,
     tone: readPersonaLayerText('tone'),
+    examples: readPersonaLayerText('examples'),
     identity,
     personaMode: 'full',
     mode: 'v1',
@@ -44,6 +45,37 @@ export function composePersonaSystemPrompt({ ownerName = '主人', maxChars = 12
   const name = String(cur?.name || '').trim() || '小鲸鱼';
   const text = `【人格 · 主人自定义角色卡（system 级设定，不是对话内容）】\n${composed.text}`.trim();
   return { text, chars: text.length, name };
+}
+
+/**
+ * 人格 → 预设 的同步状态（只读，给设置页展示）。
+ * UI 要回答一个问题：「我现在改的人格，到底进没进 Agent 预设、要不要重启」。
+ */
+export function personaPresetStatus() {
+  const { text } = composePersonaSystemPrompt({});
+  let snapshot = '';
+  let snapshotMtime = 0;
+  try {
+    snapshot = fs.readFileSync(PERSONA_SNAPSHOT_FILE, 'utf8');
+    snapshotMtime = fs.statSync(PERSONA_SNAPSHOT_FILE).mtimeMs;
+  } catch { /* 还没同步过 */ }
+  const presets = PRESETS.map((name) => {
+    let exists = false;
+    try { exists = fs.existsSync(patchFileFor(name)); } catch { /* 路径算不出来按未生成 */ }
+    return { name, exists };
+  });
+  const synced = Boolean(text) && snapshot === text;
+  return {
+    ok: Boolean(text),
+    // 当前人格（身份底座 + 核心 + 语气）烧进 system prompt 后的字数。
+    chars: text.length,
+    snapshotChars: snapshot.length,
+    snapshotMtime,
+    synced,
+    // 快照与当前人格不一致 = 改过但还没重启，DSH 里跑的仍是旧预设。
+    restartRequired: Boolean(text) && !synced,
+    presets,
+  };
 }
 
 /**

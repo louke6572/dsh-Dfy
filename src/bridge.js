@@ -36,6 +36,7 @@ import {
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { createNekoStickers } from './nekowhale-stickers.mjs';
+import { createHumanizeGate } from './humanize-gate.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -1113,6 +1114,9 @@ function loadConfig() {
   cfg.humanize = {
     cleanReply: true,   // 去掉英文草稿、"作为一个AI"、"希望对你有帮助"这类客服腔
     burstBrake: true,   // 分段发到一半对方又说话了 → 剩下的不发
+    gather: true,       // 攒一攒：先等一个安静窗口再回
+    groupGate: true,    // 群里没点名时按接话打分决定接不接
+    profile: 'default', // quiet / default / loud / custom
     ...(file.humanize && typeof file.humanize === 'object' ? file.humanize : {})
   };
 
@@ -9191,6 +9195,11 @@ async function main(options = {}) {
   const burstCancelAt = new Map();
   const incomingSeq = new Map();   // 每个会话收到消息的序号（判断「生成期间对方又说话了」）
   const turnIncomingSeqByKey = new Map();
+  let humanizeGateInstance = null;
+  function humanizeGate() {
+    humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(STATE_DIR, '..', 'token-usage-daily.json'), log });
+    return humanizeGateInstance;
+  }
   function humanizeReplyText(input) {
     let text = String(input ?? '');
     if (cfg.humanize?.cleanReply === false) return text;
@@ -15533,6 +15542,37 @@ async function main(options = {}) {
         );
       }
       return;
+    }
+
+    // ── 活人感：群聊接话打分（chat 模式；reserved2 有自己的社交状态机）──
+    if (kind === 'group' && currentMode !== 'reserved2' && cfg.humanize?.groupGate !== false) {
+      const verdict = humanizeGate().judgeGroup({
+        text: plainContent || textContent,
+        event,
+        cfg: cfg.humanize,
+        selfNames: [selfNickname, selfDisplayName],
+        isOwner,
+        quoteTargetIsSelf,
+        recentCount: 0,
+      });
+      appendActivity(`${key} [humanize] 接话打分 ${verdict.score}（${verdict.reasons.join('、')}）→ ${verdict.reply ? '接' : '不接'}`);
+      if (!verdict.reply) {
+        log(`[humanize] 群聊未点名，打分 ${verdict.score} 不接 (${key})`);
+        return;
+      }
+    }
+
+    // ── 活人感：攒一攒（先等安静窗口；期间对方继续补充就交给下一条统一回）──
+    if (cfg.humanize?.gather !== false && currentMode !== 'reserved2') {
+      const waitMs = humanizeGate().gatherDelayMs(textContent, cfg.humanize);
+      if (waitMs > 0) {
+        const seqAtWait = incomingSeq.get(key) ?? 0;
+        await sleep(waitMs);
+        if ((incomingSeq.get(key) ?? 0) > seqAtWait) {
+          log(`[humanize] 对方继续补充，本轮交给下一条统一回 (${key})`);
+          return;
+        }
+      }
     }
 
     // DSH 重启容错：DSH 不可用时消息入队（不丢），恢复后自动补投

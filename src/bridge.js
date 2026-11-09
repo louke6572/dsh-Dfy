@@ -9190,7 +9190,8 @@ async function main(options = {}) {
         text: String(text ?? ''),
         httpUrl: nowCfg.snowluma?.httpUrl,
         token: nowCfg.snowluma?.accessToken,
-        config: stickerCfg,
+        // 显式传 enabled：旧版 kit 模块里写的是 `enabled !== true` 才发，默认配置不写该键会被误拦。
+        config: { ...stickerCfg, enabled: stickerCfg.enabled !== false },
       });
       if (result) log(`[neko] 已补一张表情：${result.name}（${result.emotion || '无情绪'}）`);
     } catch (error) {

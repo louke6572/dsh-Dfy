@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   BRIDGE_SUPERVISOR_LOG, QQBOT_ROOT, QQ_CONFIG, QQ_LOCK_FILE, QQ_STATE_DIR,
 } from './paths.js';
@@ -173,9 +174,27 @@ function appendSupervisorLog(text) {
  */
 process.env.SURFCORE_EMBEDDED = '1';
 let embeddedModulePromise = null;
+let embeddedModuleKey = '';
+/**
+ * 插件热重载时，Node 会缓存已 import 的模块——此前所有桥接代码修改都要等 DSH 完整重启才生效，
+ * 表面看是「改了没用」。这里按 src/bridge.js 的 mtime+size 作为 cache key 重新 import；
+ * 旧实例先 stopEmbedded，避免两条 SnowLuma 连接同时处理同一条消息。
+ */
 function loadEmbedded() {
-  if (!embeddedModulePromise) embeddedModulePromise = import('../../src/bridge.js');
-  return embeddedModulePromise;
+  try {
+    const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/bridge.js');
+    const stat = fs.statSync(file);
+    const key = `${stat.mtimeMs}:${stat.size}`;
+    if (embeddedModulePromise && embeddedModuleKey === key) return embeddedModulePromise;
+    const previous = embeddedModulePromise;
+    if (previous) void previous.then((m) => m.stopEmbedded?.()).catch(() => {});
+    embeddedModuleKey = key;
+    embeddedModulePromise = import(`${pathToFileURL(file).href}?v=${key}`);
+    return embeddedModulePromise;
+  } catch {
+    if (!embeddedModulePromise) embeddedModulePromise = import('../../src/bridge.js');
+    return embeddedModulePromise;
+  }
 }
 
 export async function start({ dshWebUrl = '' } = {}) {
@@ -260,7 +279,7 @@ export async function restart(options = {}) {
   // 内嵌模式不能真的重启进程（那会带走 DSH），改成配置热重载 + 重连 SnowLuma。
   try {
     if (embeddedModulePromise) {
-      const mod = await embeddedModulePromise;
+      const mod = await loadEmbedded();
       const reloaded = await mod.reloadEmbedded();
       if (reloaded?.ok) {
         appendSupervisorLog(`内嵌桥接热重载：${reloaded.message ?? 'ok'}`);

@@ -319,11 +319,13 @@ node build.mjs --check                      # 只校验产物与源一致（不�
 node scripts/build-agent-preset-patches.mjs # dsh/agent-presets/* → presets/*.patch.yml
                                             # 若存在 dsh/agent-presets/persona.system.md（插件自动生成的
                                             # 人格快照，不入库），会把它烘进三个预设的 system prompt；
-                                            # 这两个产物都是运行期文件，不进 git
+                                            # 这两个产物都是运行期文件，不进 git（postinstall 会自动生成，
+                                            # 所以 git 安装/干净 clone 也不会缺）
 node scripts/build-agent-preset-patches.mjs --check
 
 node scripts/version.mjs check              # 版本一致性（package.json / README / AGENT / CHANGELOG / tag）
 node scripts/privacy-scan.mjs --strict      # 隐私闸门（本机路径 / 账号 / 令牌 / 私钥）
+node scripts/publish-guard.mjs              # 发布守卫：本地人设生成物不许被 npm pack 带走（prepublishOnly 自动跑）
 
 node widget/tools/ci-audit.mjs --no-pack    # 路由安全 / 接口对等 / 注入面 / CI
 node widget/tools/ci-audit-selftest.mjs     # 审计脚本自检（防止断言空转）

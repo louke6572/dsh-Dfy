@@ -50,6 +50,17 @@ jobs:
       - name: 隐私与敏感信息扫描
         run: node scripts/privacy-scan.mjs --strict
 
+      # 隐私第二道防线（第一道是 package.json 的 prepublishOnly → scripts/publish-guard.mjs）：
+      # 本机人设是**构建期生成物**（presets/*.patch.yml、dsh/agent-presets/persona.system.md），
+      # 不进 git 但会被 npm pack 按 files 白名单从磁盘取走。CI 是干净 clone ⇒ 本就不该存在；
+      # 真出现了说明有人改了打包方式或把生成物提交进了仓库 —— 必须拦在发布前。
+      - name: 发布物不得含本机人设生成物
+        run: |
+          node scripts/publish-guard.mjs
+          if git ls-files | grep -qE '^(presets/.*\.patch\.yml|dsh/agent-presets/persona\.system\.md)$'; then
+            echo "ERROR: 人设生成物被提交进了 git（应从版本库移除，仅本地生成）"; exit 1
+          fi
+
       - name: 开发机路径扫描
         run: |
           if grep -rn "TestBox" lib backend/lib widget/lib src scripts; then

@@ -68,6 +68,35 @@ function gitTracks(rel) {
   return ok
 }
 
+// 构建期生成物：**故意** gitignore，不进 git 也不该报「忘了 add」。
+//   · presets/*.patch.yml：由 scripts/build-agent-preset-patches.mjs 从 dsh/agent-presets/ 源生成
+//     （postinstall / setup-dsh / 插件启动都会生成），里面烘焙了用户人格正文 —— 入库会泄露主人人设。
+//   · dsh/agent-presets/persona.system.md：同上，人格 system prompt 快照，属于运行时产物。
+//   · __pycache__/*.pyc：Python 字节码，永远不该入库。
+const GENERATED_ARTIFACTS = [
+  /^presets\/[^/]+\.patch\.yml$/,
+  /^dsh\/agent-presets\/persona\.system\.md$/,
+  /(^|\/)__pycache__\//,
+  /\.pyc$/,
+]
+const isGeneratedArtifact = (rel) => GENERATED_ARTIFACTS.some((re) => re.test(rel))
+
+// 被 .gitignore 忽略的文件集合（一次 git 调用取全量，避免逐文件 spawn）。
+// 用途：区分「忘了 git add」（真问题）和「被规则忽略」（可能是规则太宽，要单独警告）。
+let _gitIgnoredCache = null
+function gitIgnored(rel) {
+  if (_gitIgnoredCache === null) {
+    _gitIgnoredCache = new Set()
+    try {
+      const out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'], {
+        cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024,
+      }).toString()
+      for (const one of out.split('\0')) if (one) _gitIgnoredCache.add(one.replace(/\\/g, '/'))
+    } catch (e) { /* 取不到就当没忽略：退回旧行为 */ }
+  }
+  return _gitIgnoredCache.has(String(rel).replace(/\\/g, '/'))
+}
+
 // ---------------------------------------------------------------------------
 // 工具：按括号配对取出从 at 处开始的整段调用实参
 // （用「从头数到配对」而不是非贪婪正则：后者会在嵌套对象/数组时截错位置）
@@ -314,7 +343,10 @@ run('3', '检查打包后是否可以运行', (problems, notes) => {
   //     · **git URL 安装**：克隆下来就少了这个文件 ⇒ DSH 读插件元信息（package.json 的 icon 字段）时 ENOENT。
   //   icon.png 正好踩中这个坑（本地有、从来没 add 过）。这里做一道通用防线：白名单里的路径都要被 git 跟踪。
   if (files && isGitRepo()) {
+    const generatedSeen = []
     for (const f of files) {
+      // npm `files` 里的 `!xxx` 是**排除项**，不是磁盘路径 —— 当成路径查会报「不存在」的假阳性。
+      if (String(f).startsWith('!')) continue
       const rel = String(f).replace(/^\.\//, '').replace(/\/$/, '')
       if (!rel) continue
       if (!has(rel)) { problems.push('files 白名单里的路径在磁盘上不存在：' + rel); continue }
@@ -332,15 +364,32 @@ run('3', '检查打包后是否可以运行', (problems, notes) => {
             // 与 assets/ 下的正式素材重复，只为文档截图服务）。它们不进 git 是预期行为，
             // 报成「git 安装会缺文件」只会制造噪音；运行期需要的素材在 assets/ 下，照旧逐文件查。
             else if (/^(widget\/)?docs\//.test(r2)) continue
+            // 构建期生成物（presets/*.patch.yml 等）：故意 gitignore，安装时生成，不算忘了 add。
+            else if (isGeneratedArtifact(r2)) { generatedSeen.push(r2); continue }
             else if (!gitTracks(r2)) {
-              problems.push('files 白名单目录里的 "' + r2 + '" **没有被 git 跟踪** —— npm/zip 安装没事，但 git 安装的用户会缺这个文件')
+              if (gitIgnored(r2)) {
+                // 被 .gitignore 忽略但不在生成物清单里 —— 很可能是规则太宽误伤了正式文件
+                // （icon.png 那种「本地能跑、git 安装就缺」的经典坑）。要报，但说清是哪一类。
+                problems.push('files 白名单目录里的 "' + r2 + '" 被 .gitignore 忽略、也不在生成物清单里 —— git 安装会缺这个文件；若是构建期产物请登记到 GENERATED_ARTIFACTS，若是正式文件请修 .gitignore')
+              } else {
+                problems.push('files 白名单目录里的 "' + r2 + '" **没有被 git 跟踪** —— npm/zip 安装没事，但 git 安装的用户会缺这个文件')
+              }
             }
           }
         }
         walkUntracked(abs, rel.replace(/\/$/, '') + '/')
+      } else if (isGeneratedArtifact(rel)) {
+        generatedSeen.push(rel)
       } else if (!gitTracks(rel)) {
-        problems.push('files 白名单里的 "' + rel + '" **没有被 git 跟踪** —— npm/zip 安装没事，但 git 安装的用户会缺这个文件（例如插件图标 icon.png 缺失会让 DSH 报 ENOENT）')
+        if (gitIgnored(rel)) {
+          problems.push('files 白名单里的 "' + rel + '" 被 .gitignore 忽略、也不在生成物清单里 —— git 安装会缺这个文件；若是构建期产物请登记到 GENERATED_ARTIFACTS，若是正式文件请修 .gitignore')
+        } else {
+          problems.push('files 白名单里的 "' + rel + '" **没有被 git 跟踪** —— npm/zip 安装没事，但 git 安装的用户会缺这个文件（例如插件图标 icon.png 缺失会让 DSH 报 ENOENT）')
+        }
       }
+    }
+    if (generatedSeen.length) {
+      notes.push('构建期生成物（故意 gitignore，postinstall/启动时生成）：' + generatedSeen.sort().join('、'))
     }
   }
   const patch = pkg.dsh && pkg.dsh.bundle && pkg.dsh.bundle.patch

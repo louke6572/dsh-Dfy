@@ -41,6 +41,11 @@ jobs:
       - name: 隐私与敏感信息扫描
         run: node scripts/privacy-scan.mjs --strict
 
+      # 打包/发布会把「构建期生成物」按 files 白名单从磁盘取走；本机人设就在这些生成物里
+      # （presets/*.patch.yml、dsh/agent-presets/persona.system.md）。干净 clone 下它们不存在 ⇒ 通过。
+      - name: 发布守卫（不得含本机人设生成物）
+        run: node scripts/publish-guard.mjs
+
       - name: 开发机路径扫描
         run: |
           if grep -rn "TestBox" lib backend/lib widget/lib src scripts; then

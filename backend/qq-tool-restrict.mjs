@@ -179,6 +179,13 @@ const SAFE_EXACT = new Set([
   'search_context',
   'acp_status',
   'acp_cache',
+  // 插件内置表情工具（backend/lib/index.js scope.tools 注册）：
+  //   · sticker_search 只查本地清单返回名字；sticker_send 下载一张 GIF 到缓存并
+  //     返回 dshsticker:<文件名> 引用（不含本机路径），图片由桥接收口转成图片段。
+  //   · 2026-11-09 事故：注册了工具却没进本白名单 → 每次调用都被 guard 拒绝，
+  //     模型只能回「表情包工具被拦下来」，功能全天不可用。
+  'sticker_search',
+  'sticker_send',
 ])
 
 // 给「插件兼容性体检」读取的只读快照：不要在别处再抄一份白名单。

@@ -162,6 +162,28 @@ for (const [name, input, expect] of REDACT_CASES) {
 }
 ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
 
+// ── 6) 工具注册 × 桥接白名单对账：插件注册的每个模型侧工具必须在
+//      qq-tool-restrict 的 SAFE_EXACT 白名单里，否则 guard 会把它拦死——
+//      2026-11-09 事故：sticker_search/sticker_send 注册后没进白名单，
+//      表情包功能全天「被拦下来」。
+{
+  const restrictSrc = read(path.join(ROOT, 'backend', 'qq-tool-restrict.mjs'));
+  const exactBlock = /const SAFE_EXACT = new Set\(\[([\s\S]*?)\]\)/.exec(restrictSrc);
+  const whitelist = new Set(
+    exactBlock
+      ? [...exactBlock[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+      : []
+  );
+  if (!whitelist.size) fail('解析 qq-tool-restrict.mjs 的 SAFE_EXACT 白名单失败');
+  const pluginIndexSrc = read(path.join(ROOT, 'backend', 'lib', 'index.js'));
+  const registered = [...pluginIndexSrc.matchAll(/scope\.tools\.register\(\s*\{\s*name:\s*'([^']+)'/g)].map((m) => m[1]);
+  if (!registered.length) fail('backend/lib/index.js 里找不到 scope.tools.register（插件工具注册被移走？对账逻辑要跟着改）');
+  for (const name of registered) {
+    if (!whitelist.has(name)) fail(`[工具未进白名单] 插件注册了 "${name}" 但 qq-tool-restrict SAFE_EXACT 没有 → 运行时会被 guard 拦死`);
+    else ok(`工具 ${name} 已在桥接白名单`);
+  }
+}
+
 // ── 结果 ──────────────────────────────────────────────────────────────
 for (const n of notes) console.log(`  ok   ${n}`);
 if (failures.length) {

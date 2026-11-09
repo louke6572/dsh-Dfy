@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
-import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
+import { DshTransport } from './dsh-transport.js';
 
 /** DSH home：凭据文件与（历史）启动日志都在这里。 */
 export function resolveDshHome() {
@@ -293,7 +293,7 @@ function waitWithSignal(promise, signal) {
   });
 }
 
-export class NodeApiClient extends AbstractApiClient {
+export class NodeApiClient extends DshTransport {
   constructor(baseUrl, timeoutMs, auth) {
     super(timeoutMs);
     this.baseUrl = String(baseUrl ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
@@ -611,8 +611,8 @@ export class NodeApiClient extends AbstractApiClient {
   /**
    * 覆写 unary RPC：适配 DSH 0.1.2 起、0.1.5 仍沿用的斜杠 endpoint 和 { args } 包装，
    * 并且只解析最外层信封，不依赖官方包的 value schema
-   * （桥接依赖的 @deepseek-ai/dsh-host-apiproxy 是独立的旧版客户端包，DSH 升级不影响它）。
-   * 注意：新版基类里 callUnary 是 protected/private，这里用同名 public 方法覆写即可，
+   * （HTTP 基础层由插件维护，不安装任何 DSH 核心包）。
+   * 协议适配集中在此方法，
    * 业务侧一律走桥接自己的 sessions/workspace/settings 门面，不依赖基类的域方法。
    */
   async callUnary(method, payload, signal, timeoutPolicy = 'default') {
@@ -656,7 +656,7 @@ export class NodeApiClient extends AbstractApiClient {
     return response.json();
   }
 
-  /** 新版 DSH 的 agentPresets 命名空间是复数；旧版基类仍映射到 agentPreset.list。 */
+  /** 新版 DSH 的 agentPresets 命名空间是复数。 */
   agentPresets = {
     list: (payload, signal) => this.callUnary('agentPresets.list', payload, signal),
   };

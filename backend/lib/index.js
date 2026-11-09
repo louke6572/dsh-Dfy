@@ -1930,17 +1930,18 @@ ${body}`;
       const records = Array.isArray(snapshot.records) ? snapshot.records : [];
       const norm = (text) => String(text ?? '').replace(/\s+/g, '').slice(0, 60);
       const byKey = new Map();
+      const noOrganizeCount = records.filter((record) => record.noOrganize === true || record.pinned === true || record.firstMet === true).length;
       for (const record of records) {
-        if (record.firstMet || record.pinned) continue;
+        if (record.firstMet || record.pinned || record.noOrganize) continue;
         const key = `${record.title || ''}|${norm(record.text)}`;
         if (!byKey.has(key)) byKey.set(key, []);
         byKey.get(key).push(record);
       }
       const duplicates = [...byKey.values()].filter((list) => list.length > 1);
-      const noisy = records.filter((record) => !record.pinned && !record.firstMet
+      const noisy = records.filter((record) => !record.pinned && !record.firstMet && !record.noOrganize
         && String(record.text || '').length < 14 && /^(嗯|哦|好|好的|哈哈|在吗|收到|行|？|\?)/.test(String(record.text || '').trim()));
-      const faded = records.filter((record) => !record.pinned && !record.firstMet && (record.clarity === 'trace' || Number(record.importance) < 35));
-      const oldFuzzy = records.filter((record) => !record.pinned && !record.firstMet && record.clarity === 'fuzzy'
+      const faded = records.filter((record) => !record.pinned && !record.firstMet && !record.noOrganize && (record.clarity === 'trace' || Number(record.importance) < 35));
+      const oldFuzzy = records.filter((record) => !record.pinned && !record.firstMet && !record.noOrganize && record.clarity === 'fuzzy'
         && Date.now() - (Date.parse(record.date || '') || Date.now()) > 30 * 86400_000);
       json(res, 200, {
         ok: true,
@@ -1954,11 +1955,25 @@ ${body}`;
           fadedSample: faded.slice(0, 5).map((record) => String(record.title || record.text || '').slice(0, 30)),
           oldFuzzy: oldFuzzy.length,
           protectedCount: records.filter((record) => record.pinned || record.firstMet).length,
+          noOrganizeCount,
           capacity: snapshot.status?.percent ?? 0,
           inboxPending: countInboxSince(Number((config?.organize ?? {}).lastRunAt) || 0),
           inboxTotal: countInboxSince(0),
         },
       });
+      return;
+    }
+    // 批量标记「不参与整理」：整理/合并/遗忘都会跳过这些记录
+    if (action === 'protect-batch') {
+      const ids = Array.isArray(body.ids) ? body.ids.map(String).slice(0, 300) : [];
+      const noOrganize = body.noOrganize !== false;
+      if (!ids.length) { json(res, 400, { ok: false, error: '没有选中任何记忆' }); return; }
+      let changedCount = 0;
+      for (const id of ids) {
+        const result = await applyMemoryCardAction('update', { id, patch: { noOrganize } }, { config });
+        if (result?.ok) changedCount += 1;
+      }
+      json(res, 200, { ...memoryCardSnapshot(config, { recordLimit: 300 }), changedCount });
       return;
     }
     if (action === 'organize') {

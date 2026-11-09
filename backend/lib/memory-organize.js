@@ -232,7 +232,7 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
   function candidates(config, ids = null) {
     const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });
     const all = (snapshot.records ?? []).filter((record) => {
-      if (record.pinned || record.firstMet || record.isInitial) return false;
+      if (record.pinned || record.firstMet || record.isInitial || record.noOrganize) return false;
       const tags = Array.isArray(record.tags) ? record.tags : [];
       if (tags.includes('first')) return false;
       return true;
@@ -500,7 +500,7 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
 
     let removed = 0;
     for (const record of dayRecords.slice(0, 80)) {
-      if (record.pinned || record.firstMet) continue;
+      if (record.pinned || record.firstMet || record.noOrganize) continue;
       const result = await applyMemoryCardAction('forget', { id: record.id }, { config });
       if (result?.ok) removed += 1;
     }

@@ -386,6 +386,7 @@ function normalizeRecord(item) {
     importanceReasons: asArray(raw.importanceReasons).map(String).slice(0, 12),
     emotional: clampInt(raw.emotional, 0, 0, 24),
     pinned: raw.pinned === true,
+    noOrganize: raw.noOrganize === true,
     anchor: raw.anchor === true || raw.pinned === true,
     clarity: CLARITY_ORDER.includes(raw.clarity) ? raw.clarity : 'clear',
     createdAt: iso(createdAt),
@@ -1895,10 +1896,11 @@ export function memoryCardStatus(card, config = {}, now = Date.now()) {
   if (percentRatio >= MEMORY_CAPACITY_THRESHOLDS[2]) level = 3;
   else if (percentRatio >= MEMORY_CAPACITY_THRESHOLDS[1]) level = 2;
   else if (percentRatio >= MEMORY_CAPACITY_THRESHOLDS[0]) level = 1;
-  const counts = { total: card.records.length, vivid: 0, clear: 0, fuzzy: 0, trace: 0, owner: 0, bili: 0, qq: 0, anchors: 0, initial: 0, firstMet: 0 };
+  const counts = { total: card.records.length, vivid: 0, clear: 0, fuzzy: 0, trace: 0, owner: 0, bili: 0, qq: 0, anchors: 0, initial: 0, firstMet: 0, noOrganize: 0 };
   for (const record of card.records) {
     if (counts[record.clarity] != null) counts[record.clarity] += 1;
     if (record.pinned) counts.anchors += 1;
+    if (record.noOrganize) counts.noOrganize += 1;
     if (record.tags.includes('owner')) counts.owner += 1;
     if (record.platform === 'bili') counts.bili += 1;
     if (record.platform === 'qq') counts.qq += 1;

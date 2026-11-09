@@ -162,6 +162,7 @@ export function memoryCardSnapshot(config = memoryCardConfig(), { recordLimit = 
       importance: record.importance,
       clarity: record.clarity,
       pinned: record.pinned,
+      noOrganize: record.noOrganize === true,
       tags: record.tags,
       speaker: record.speaker,
       botReply: record.botReply || '',
@@ -389,6 +390,10 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
         record.pinned = patch.pinned === true;
         record.anchor = record.pinned;
         changedFields.push('pinned');
+      }
+      if (patch.noOrganize !== undefined) {
+        record.noOrganize = patch.noOrganize === true;
+        changedFields.push('noOrganize');
       }
       if (!changedFields.length) return { ok: false, error: '没有要修改的字段' };
       record.manual = true;

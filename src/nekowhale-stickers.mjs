@@ -192,7 +192,7 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
   /** 回复后自动补一张（受配置的开关/间隔/排除情绪约束）。 */
   async function afterReply({ key, text, httpUrl, token, config = {}, now = Date.now(), transport = null }) {
     const cfg = config ?? {};
-    if (cfg.enabled !== true) return null;
+    if (cfg.enabled === false) return null;   // 默认开；面板关掉才不发
     const minGap = Math.max(0, Number(cfg.minGapSec ?? 60)) * 1000;
     const maxPerHour = Math.max(1, Number(cfg.maxPerHour ?? 6));
     const state = loadState();

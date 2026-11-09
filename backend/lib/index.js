@@ -1868,6 +1868,20 @@ ${body}`;
   // memory-card 是她自己的记忆（冲浪 + 聊天 + 主人互动），带清晰度/遗忘/容量规则。
   async function handleMemoryCard(req, res, url) {
     const config = readUnified().config.memoryCard;
+    // inbox 里「上次整理之后新增」的条数：比总数更有意义（总数会一直涨）。
+    const countInboxSince = (since) => {
+      try {
+        const file = activeMemoryPaths().inbox;
+        if (!fs.existsSync(file)) return 0;
+        const lines = fs.readFileSync(file, 'utf8').split(String.fromCharCode(10)).filter(Boolean);
+        if (!since) return lines.length;
+        let count = 0;
+        for (const line of lines) {
+          try { if ((Date.parse(JSON.parse(line).at) || 0) > since) count += 1; } catch { /* 跳过坏行 */ }
+        }
+        return count;
+      } catch { return 0; }
+    };
     if (req.method === 'GET') {
       // 默认 80 条（外壳每 60 秒轮询一次）；「打开记忆文档」传 limit=300 拿更多可编辑记录。
       const recordLimit = Math.max(1, Math.min(500, Number(url?.searchParams?.get('limit')) || 80));
@@ -1881,8 +1895,13 @@ ${body}`;
           lastRunAt: Number(organize.lastRunAt) || 0,
           lastMerged: Number(organize.lastMerged) || 0,
           lastDropped: Number(organize.lastDropped) || 0,
+          intervalHours: Math.max(6, Math.min(168, Number(organize.intervalHours) || 20)),
+          hour: Number.isFinite(Number(organize.hour)) ? Number(organize.hour) : -1,
+          minRecords: Math.max(10, Math.min(300, Number(organize.minRecords) || 40)),
           llmReady: memoryOrganizer.llmReady(),
         },
+        inboxPending: countInboxSince(Number(organize.lastRunAt) || 0),
+        inboxTotal: countInboxSince(0),
       });
       return;
     }
@@ -1905,6 +1924,43 @@ ${body}`;
       json(res, 200, { ...memoryCardSnapshot(config), removed });
       return;
     }
+    // 整理预览：只做本地规则分析，不调模型、不改数据（告诉你会合并/清掉什么）
+    if (action === 'organize-preview') {
+      const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });
+      const records = Array.isArray(snapshot.records) ? snapshot.records : [];
+      const norm = (text) => String(text ?? '').replace(/\s+/g, '').slice(0, 60);
+      const byKey = new Map();
+      for (const record of records) {
+        if (record.firstMet || record.pinned) continue;
+        const key = `${record.title || ''}|${norm(record.text)}`;
+        if (!byKey.has(key)) byKey.set(key, []);
+        byKey.get(key).push(record);
+      }
+      const duplicates = [...byKey.values()].filter((list) => list.length > 1);
+      const noisy = records.filter((record) => !record.pinned && !record.firstMet
+        && String(record.text || '').length < 14 && /^(嗯|哦|好|好的|哈哈|在吗|收到|行|？|\?)/.test(String(record.text || '').trim()));
+      const faded = records.filter((record) => !record.pinned && !record.firstMet && (record.clarity === 'trace' || Number(record.importance) < 35));
+      const oldFuzzy = records.filter((record) => !record.pinned && !record.firstMet && record.clarity === 'fuzzy'
+        && Date.now() - (Date.parse(record.date || '') || Date.now()) > 30 * 86400_000);
+      json(res, 200, {
+        ok: true,
+        preview: {
+          total: records.length,
+          duplicates: duplicates.length,
+          duplicateSample: duplicates.slice(0, 5).map((list) => ({ title: list[0].title, count: list.length })),
+          noisy: noisy.length,
+          noisySample: noisy.slice(0, 5).map((record) => String(record.text || '').slice(0, 30)),
+          faded: faded.length,
+          fadedSample: faded.slice(0, 5).map((record) => String(record.title || record.text || '').slice(0, 30)),
+          oldFuzzy: oldFuzzy.length,
+          protectedCount: records.filter((record) => record.pinned || record.firstMet).length,
+          capacity: snapshot.status?.percent ?? 0,
+          inboxPending: countInboxSince(Number((config?.organize ?? {}).lastRunAt) || 0),
+          inboxTotal: countInboxSince(0),
+        },
+      });
+      return;
+    }
     if (action === 'organize') {
       const result = await memoryOrganizer.organize({
         ids: Array.isArray(body.ids) ? body.ids : null,
@@ -1920,6 +1976,9 @@ ${body}`;
       const patch = {};
       if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
       if (typeof body.diary === 'boolean') patch.diary = body.diary;
+      if (Number.isFinite(Number(body.intervalHours))) patch.intervalHours = Math.max(6, Math.min(168, Number(body.intervalHours)));
+      if (Number.isFinite(Number(body.hour))) patch.hour = Math.max(-1, Math.min(23, Number(body.hour)));
+      if (Number.isFinite(Number(body.minRecords))) patch.minRecords = Math.max(10, Math.min(300, Number(body.minRecords)));
       if (Object.keys(patch).length) saveUnified({ memoryCard: { organize: patch } });
       json(res, 200, memoryCardSnapshot(config));
       return;

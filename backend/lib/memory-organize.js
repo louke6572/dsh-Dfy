@@ -522,7 +522,10 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
       else if (result.reason !== 'exists') out.diaryError = result.error || result.reason;
     }
     const lastAt = Number(auto.lastRunAt) || 0;
-    if (wantOrganize && now - lastAt >= 20 * 3600_000) {
+    const dueHours = Math.max(6, Math.min(168, Number(auto.intervalHours) || 20));
+    const preferHour = Number.isFinite(Number(auto.hour)) ? Number(auto.hour) : -1;
+    const hourMatches = preferHour < 0 || preferHour > 23 || new Date(now).getHours() === preferHour;
+    if (wantOrganize && hourMatches && now - lastAt >= dueHours * 3600_000) {
       const minRecords = Math.max(10, Math.min(300, Number(auto.minRecords) || 40));
       const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });
       if ((snapshot.records ?? []).length >= minRecords) {

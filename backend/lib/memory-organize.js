@@ -232,7 +232,9 @@ export function createMemoryOrganizer({ ctx, log = () => {}, tokenBudget = null 
   function candidates(config, ids = null) {
     const snapshot = memoryCardSnapshot(config, { recordLimit: 500 });
     const all = (snapshot.records ?? []).filter((record) => {
-      if (record.pinned || record.firstMet || record.isInitial || record.noOrganize) return false;
+      // 只保护：置顶、真正的「初次相遇」、标记不整理。isInitial（最初窗口）几乎覆盖所有记录，
+      // 之前把它也当保护条件，导致「整理选中」几乎总是提示「可整理的记录太少」。
+      if (record.pinned || record.firstMet || record.noOrganize) return false;
       const tags = Array.isArray(record.tags) ? record.tags : [];
       if (tags.includes('first')) return false;
       return true;

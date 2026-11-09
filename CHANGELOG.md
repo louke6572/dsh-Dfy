@@ -23,6 +23,17 @@
   · 「立即整理」「写昨日日记」放在同一张卡里。
 - inbox 计数改成「上次整理后新增」，比单纯总数更有意义。
 
+### 接入成熟的自进化记忆插件 dsh-evolve（替代手搓记忆）
+- 选型对比后安装 `dsh-evolve`（GitHub: chenzheshushi-commits/dsh-evolve）：
+  · 结构化记忆：fact / preference / decision / lesson / todo / note，带 scope 与重要性；
+  · 零 token 确定性召回：bigram-Jaccard + SQLite FTS5 BM25，RRF 融合，不额外调模型；
+  · 注入时机：pre-step 按当前消息召回相关记忆自动注入，每轮开始注入稳定的偏好/事实快照；
+  · 分层审批与固化：模型写入先过确定性门槛，重要记忆可晋升为常驻；
+  · 本地 JSON + Markdown 镜像，可手改、可迁移。
+- 已写入 web profile（依赖 + bundles），需重启 DSH 加载；加载后增加 memory_remember / memory_recall /
+  memory_profile / memory_budget / memory_stats / memory_confirm / memory_forget 等工具与插件设置面板。
+- 旧记忆卡降级为「档案 + 日记」；默认 facts 模式不再收录聊天流水，她的回复也不写。
+
 ### 记忆从「聊天流水」改为「只记重要的事」
 - 问题：旧设计把每条对话（含她的回复）都写进记忆卡，记忆逐渐变成聊天记录；大量寒暄/碎句，
   再怎么整理也只是在整理聊天流水。

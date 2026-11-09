@@ -28,7 +28,25 @@ const uniq = [...new Set(paths)];
 if (!uniq.length) { console.error('未提取到任何路由'); process.exit(1); }
 
 // 2) 探测 base
-const candidates = explicit ? [explicit] : ['http://127.0.0.1:56159', 'http://127.0.0.1:58058', 'http://127.0.0.1:60839', 'http://127.0.0.1:3080'];
+//   以前是四个**写死的旧端口**（56159/58058/60839/3080）——DSH 端口是随机挑的，
+//   于是这个脚本在绝大多数机器上只会打印「探测不到可用的 DSH 服务」然后退出 0：
+//   看着"跑过了"，其实一条路由都没测（验证部署变成了空转）。
+//   现在按「现役来源」优先探测：显式参数 → 环境变量 → 桌宠 host.json（插件自己写的 baseUrl，
+//   最准）→ 设置里的 dsh.baseUrl → 最后才是旧端口兜底。
+function readPetBaseUrl() {
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'pet', 'host.json'), 'utf8');
+    const j = JSON.parse(raw);
+    return String(j?.baseUrl || '').trim();
+  } catch { return ''; }
+}
+const candidates = [...new Set([
+  explicit,
+  process.env.DSH_WEB_URL || '',
+  readPetBaseUrl(),
+  dsh.baseUrl || '',
+  'http://127.0.0.1:56159', 'http://127.0.0.1:58058', 'http://127.0.0.1:60839', 'http://127.0.0.1:3080',
+].map((s) => String(s || '').trim().replace(/\/+$/, '')).filter(Boolean))];
 let client = null;
 let base = '';
 for (const b of candidates) {

@@ -415,6 +415,11 @@ export function normalizeIdList(value) {
 }
 
 function finiteNumber(value, fallback, min, max, { integer = false } = {}) {
+  // 设置页把数字框清空时发的是 null（undefined 会被 JSON.stringify 丢掉）。
+  // 以前 Number(null)=0 是有限数 → 被 clamp 成最小值，用户「清空想恢复默认」
+  // 却得到 1024 / 1 这种值。null / 空串 / 纯空白都应当回退到默认值。
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   const clamped = Math.min(max, Math.max(min, n));
@@ -554,7 +559,9 @@ export function normalizeBiliConfig(input) {
   cfg.share.via = ['dynamic', 'comment', 'dm'].includes(cfg.share.via) ? cfg.share.via : 'dynamic';
   cfg.share.minScore = finiteNumber(cfg.share.minScore, 13, 0, 20, { integer: true });
   cfg.share.silentAfterDays = finiteNumber(cfg.share.silentAfterDays, 3, 0, 60, { integer: true });
-  cfg.share.decayPerDay = finiteNumber(cfg.share.decayPerDay, 1, 0, 10, { integer: true });
+  // decayPerDay 允许一位小数（UI 提供 0.5/天）：以前 integer:true 会把 0.5 四舍五入成 1，
+  // 用户选了「衰减慢一档」却悄悄变回默认。
+  cfg.share.decayPerDay = Math.round(finiteNumber(cfg.share.decayPerDay, 1, 0, 10) * 10) / 10;
   cfg.listen = isPlainObject(cfg.listen) ? cfg.listen : {};
   cfg.listen.commentIntervalSec = finiteNumber(cfg.listen.commentIntervalSec, 300, 60, 86_400, { integer: true });
   // 2026-11 审计：这里原来连着写了两行 —— 第二行把第一行刚归一出的 'all' 又压回 'owner'，

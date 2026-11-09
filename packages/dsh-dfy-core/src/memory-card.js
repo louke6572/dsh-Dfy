@@ -1661,6 +1661,9 @@ export function compactMemoryCard(card, config = {}, { targetRatio = 0.85, now =
     if (chars <= targetChars) break;
     const candidates = card.records.filter((record) => !record.pinned
       && !record.isInitial
+      // 「不整理」是用户显式保护：整理和压缩都不能动它，否则 UI 上
+      // 「标不整理的记录不会被合并或删除」就是假的。
+      && record.noOrganize !== true
       && !(record.tags.includes('owner') && record.importance >= cfg.minOwnerImportance));
     if (!candidates.length) break;
     candidates.sort((a, b) => {

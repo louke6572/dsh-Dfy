@@ -38,12 +38,38 @@ export function createMemoryRecall({ cardFile, log = () => {} } = {}) {
     }
   }
 
-  /** 当前消息 → 相关记忆块；没有相关记录返回空串。 */
-  function promptBlock(text, { limit = 3, maxChars = 520 } = {}) {
+  /**
+   * 平台可见性：与 memory-card.js 的 visibleFor() 同一套口径。
+   * 'bili'（=公开场合：群聊/抖音群/B站）排除桌宠(scope=pet)与普通 QQ 私聊流水，
+   * 只保留 公开(bili/shared) + 身份记忆(初次相遇/锚点)；'qq'/'pet' 私下场合给全量。
+   * 敏感条目任何注入版都不进（只供管理员看全量卡）。
+   * 没有这一层时，group 里按关键词会把「主人喜欢猫」这类 pet/私聊记录召回进公开提示词，
+   * 模型可能当众复述私事 —— 隐私泄漏。
+   */
+  function visibleForPlatform(record, platform) {
+    if (!record) return false;
+    if (record.sensitive) return false;
+    if (platform === 'bili') {
+      if (record.scope === 'pet' || record.platform === 'pet') return false;
+      if (record.scope === 'bili' || record.scope === 'shared') return true;
+      // 身份记忆全平台共用：初次相遇 + 被钉住的锚点（主人是谁、关系怎么开始的）。
+      if (record.firstMet || record.pinned) return true;
+      // 普通 QQ 私聊流水不进公开场合（与 visibleFor 的 includeQqInBili 默认关闭一致）。
+      return false;
+    }
+    // 私下场合（qq / pet）读全量。
+    return true;
+  }
+
+  /** 当前消息 → 相关记忆块；没有相关记录返回空串。
+   *  platform：'bili' = 公开场合（群聊/抖音群/B站，排除桌宠与私聊流水）；
+   *            'qq' / 'pet' / 省略 = 私下场合（全量）。 */
+  function promptBlock(text, { limit = 3, maxChars = 520, platform = 'qq' } = {}) {
     const tokens = tokensOf(text);
     if (!tokens.length) return '';
     const scored = [];
     for (const record of records()) {
+      if (!visibleForPlatform(record, platform)) continue;
       const haystack = `${record.title || ''} ${record.text || ''} ${(record.tags || []).join(' ')}`.toLowerCase();
       if (!haystack) continue;
       let score = 0;

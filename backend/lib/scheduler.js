@@ -1119,6 +1119,28 @@ export function startScheduler(ctx, opts) {
     return { ok: true, message: `已叫她逛贴吧（${reason}）` }
   }
 
+  // ── 贴吧兜底叫醒（独立于 B站 生物钟）──────────────────────────────────
+  // 贴吧以前完全没有自己的定时器，只在 B站 的 wake 分支里捎带（includeTieba）。
+  // B站 关掉 / 额度满 / 这趟投递失败时，tiebaPromptDue() 会一直为 true 却永远没人叫醒，
+  // 表现为「贴吧静默饿死」。这里每 10 分钟独立看一眼，到点且没被 B站 带上就自己叫一次。
+  let lastTiebaFallbackAt = 0
+  async function tiebaFallbackTick() {
+    try {
+      if (waking) return
+      if (!tiebaPromptDue()) return
+      if (Date.now() - lastTiebaFallbackAt < 30 * 60_000) return  // 失败后 30 分钟再试，不刷屏
+      lastTiebaFallbackAt = Date.now()
+      if (await budgetBlockedNow('贴吧兜底', 'tieba')) {
+        log('[bili-whale] 贴吧兜底叫醒跳过：今日额度已满')
+        return
+      }
+      await wakeTieba('兜底叫醒')
+      log('[bili-whale] 贴吧兜底叫醒（B站 生物钟这趟没带上）')
+    } catch (e) {
+      log(`[bili-whale] 贴吧兜底叫醒失败：${String(e?.message ?? e).slice(0, 120)}`)
+    }
+  }
+
   const timer = setInterval(() => { tick().catch(() => {}) }, TICK_MS)
   // 一次性启动定时器单独收好：stop() 必须把它们也清掉，否则测试/卸载后进程
   // 仍被 8~25 秒后的回调吊着（Node 24 下强制 exit 还会撞 libuv 断言）。
@@ -1133,6 +1155,7 @@ export function startScheduler(ctx, opts) {
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
   const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)
   const timerDm = setInterval(() => { dmTick().catch(() => {}) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
+  const timerTieba = setInterval(() => { tiebaFallbackTick().catch(() => {}) }, 10 * 60_000)  // 贴吧兜底叫醒（见上）
   log(`[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）；监听已挂上 ✓`)
 
   return {
@@ -1146,12 +1169,19 @@ export function startScheduler(ctx, opts) {
         else fs.rmSync(STATE, { force: true })
       } catch {}
       lastListenAt = 0            // 监听间隔也立刻重读 ✓（改完全天/间隔马上生效）
-      writeL({})                  // 重置基线 → 下次按"现在"重新算，不会把旧的倒出来 ✓
+      // 只重读配置，保留上次的 lastSeen 水位：以前 `writeL({})` 会把基线清零，
+      // 下一轮 listenTick 走「第一次跑只当基线」分支，把 invalidate 前刚到、
+      // 还没处理的新评论/新私信永久跳过（设置页每保存一次就出现一次盲区）。
+      try {
+        const oldL = readL() ?? {}
+        const keepSeen = Number(oldL.lastSeen ?? 0)
+        writeL(keepSeen > 0 ? { lastSeen: keepSeen } : {})
+      } catch {}
       tick().catch(() => {})
       listenTick().catch(() => {})
       dmTick().catch(() => {})
     },
-    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timerDyn); clearInterval(timerDm); for (const t of startupTimers) clearTimeout(t); try { permissionListenerOff?.() } catch {} },
+    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timerDyn); clearInterval(timerDm); clearInterval(timerTieba); for (const t of startupTimers) clearTimeout(t); try { permissionListenerOff?.() } catch {} },
     /** 切角色时用：停定时器 + 取消当前 DSH 会话的在途回合，避免旧人格继续跑。 */
     async retire() {
       this.stop();

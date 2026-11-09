@@ -299,7 +299,11 @@ function registerStickerTools(ctx) {
           const item = exact || await kit.pick(wanted, { minScore: 1 });
           if (!item) throw new Error(`没有匹配「${wanted}」的表情，先用 sticker_search 搜一下`);
           const file = await kit.download(item);
-          return { text: `![${item.name}](${file})` };
+          // 关键：不能把本机绝对路径写进 Markdown。一旦图片行因任何原因降级成文字发出，
+          // 就会把「盘符:\Users\用户名\…」这类本机绝对路径公开（2026-11 真实隐私事故）。
+          // 只回「不含路径」的引用 token，由桥接在本地缓存目录里解析成图片。
+          const safeName = String(item.name || '').replace(/[[\]()]/g, '');
+          return { text: `![${safeName}](dshsticker:${encodeURIComponent(path.basename(file))})` };
         },
       });
       pluginLog('[sticker] 内置表情工具已注册：sticker_search / sticker_send');
@@ -622,6 +626,12 @@ export function apply(ctx) {
     return { qq: start.qq !== false, bili: start.bili !== false };
   }
   function platformStartEnabled(id) {
+    // 模块中心停用的平台不自动启动；但**不改用户的 platforms.start 偏好**，
+    // 这样重新启用模块后会自动恢复（以前停用模块会写 start=false，而启用只写
+    // modules=true，导致 QQ 永久不再自动启动、界面里也没有入口恢复）。
+    try {
+      if (readUnified().config?.modules?.[id] === false) return false;
+    } catch { /* 读不到模块配置就按启动开关判断 */ }
     return platformStartState()[id] !== false;
   }
   function idleSchedulerStatus(reason = 'disabled') {
@@ -1729,13 +1739,12 @@ export function apply(ctx) {
 
   async function handlePersonaClassify(req, res) {
     if (req.method !== 'POST') {
-      json(res, 405, { ok: false, code: 'PERSONA_CLASSIFY_METHOD', error: '只支持 POST', hint: '用角色页的「智能拆分」按钮' });
+      json(res, 405, { ok: false, code: 'PERSONA_CLASSIFY_METHOD', error: '只支持 POST' });
       return;
     }
     try {
       const body = await readJsonBody(req);
-      let text = String(body.text ?? '');
-    if (layer === 'daily') text = withDailyIdentity(text);
+      const text = String(body.text ?? '');
       const drafts = await personaClassifier.classify(text);
       drafts.daily = withDailyIdentity(drafts.daily);
       json(res, 200, { ok: true, drafts, note: '这是草稿；请检查/编辑后逐层保存。' });
@@ -3104,10 +3113,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       try { await douyinStop(); } catch {}
     }
     if (!enabled && id === 'qq') {
-      // 2026-11 实测坑：模块停用只隐藏导航，**不停桥**——用户点了「停用旧桥」以为已交给 AstrBot，
-      // 实际桥还在收发，接上 AstrBot 后就变成两个大脑同时回 QQ（双回复）。
-      // 真停桥：关掉平台启动开关（防止 2 分钟后端口漂移自愈又把它拉起来）+ 立即 stop。
-      try { saveUnified({ platforms: { start: { qq: false } } }); } catch (error) { pluginLog('[module] 关 QQ 启动开关失败：', error?.message ?? error); }
+      // 模块停用只停当前桥（防止两个大脑同时回 QQ），**不改 platforms.start**：
+      // 启动偏好由设置页的「随插件自动启动 QQ」控制，重新启用模块即自动恢复。
       try { await stopBridge(); } catch (error) { pluginLog('[module] 停 QQ 桥失败：', error?.message ?? error); }
     }
     pluginLog(`[module] ${id} → ${enabled ? '启用' : '停用'}`);
@@ -3519,7 +3526,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try {
       if (id === 'qq') {
         if (!platformStartEnabled('qq')) {
-          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「维护 → QQ（旧桥）」打开「启动 QQ」并保存' });
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「随插件自动启动 QQ」并保存' });
         }
         const status = await bridgeStatus();
         const stale = await bridgeStaleReason(status);
@@ -3537,7 +3544,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
       if (id === 'bili') {
         if (!platformStartEnabled('bili')) {
-          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「B站」页打开「启动 B站」并保存' });
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「养鱼（B站）」页打开「随插件自动启动 B站」并保存' });
         }
         const state = startSchedulerNow();
         return launchItem(id, state.running === true, {
@@ -3807,7 +3814,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (action === 'stop') { json(res, 200, await stopBridge()); return; }
     if (action === 'restart') {
       if (!platformStartEnabled('qq')) {
-        json(res, 409, { ok: false, error: 'QQ 启动开关已关闭：先在「QQ」页打开「启动 QQ」并保存' });
+        json(res, 409, { ok: false, error: 'QQ 启动开关已关闭：先在「QQ」页打开「随插件自动启动 QQ」并保存' });
         return;
       }
       json(res, 200, await restartBridge({ dshWebUrl: currentDshUrl() }));
@@ -4471,6 +4478,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     const model = String(body.model ?? '').trim().slice(0, 300);
     if (Boolean(provider) !== Boolean(model)) { json(res, 400, { ok: false, error: '提供商和模型要同时选，或同时清空（跟随默认）' }); return; }
     saveUnified({ model: { provider, model } });
+    // QQ 桥接读的是 qq 配置里的 dsh.provider/model（不是 unified.model）。
+    // 以前只写 unified，用户在「模型」页切换后 QQ 仍用旧模型、两处说明互相矛盾。
+    // 这里同步写一份（仅在明确选择时；清空不改动 QQ 现有配置，避免把能用的配置写坏）。
+    if (provider && model) {
+      try { saveQqConfig({ dsh: { provider, model } }); } catch (err) { pluginLog(`[模型] 同步到 QQ 配置失败：${String(err?.message ?? err).slice(0, 160)}`); }
+    }
     let defaultSaved = false;
     if (provider && model && typeof defaultModelService?.saveSelection === 'function') {
       try { await defaultModelService.saveSelection({ provider, model }); defaultSaved = true; } catch (err) { pluginLog(`[模型] 写入 DSH 默认失败：${String(err?.message ?? err).slice(0, 160)}`); }
@@ -4971,11 +4984,22 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (!text.trim()) { json(res, 400, { error: { message: 'messages 里没有用户消息' } }); return; }
     const model = String(body.model ?? 'dfy-fish');
     const id = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    // 会话身份：AstrBot 的 OpenAI provider 本身只传 messages，但如果调用方愿意带上
+    // 会话标识（自定义 header / OpenAI 规范里的 user / 扩展字段 metadata），就按身份建
+    // 独立 DSH 会话；没带则退回默认会话（设置页自测、旧调用方）。
+    const conversationKey = String(
+      req.headers['x-dsh-conversation']
+      ?? req.headers['x-dsh-umo']
+      ?? body.user
+      ?? body?.metadata?.conversation
+      ?? body?.metadata?.umo
+      ?? ''
+    ).trim();
     // 路线 B 下 QQ 消息只到这里，不再经过桥接镜像——顺手把它投进桌宠消息卡片，
     // 否则卡片看不到 QQ 对话（以前靠桥接 POST /qq/incoming）。
     try { petApi.mirror?.({ role: 'user', sender: '主人', text }); } catch { /* 卡片镜像失败不影响回复 */ }
     try {
-      const reply = await rawChat.ask(text);
+      const reply = await rawChat.ask(text, { key: conversationKey });
       try { petApi.mirror?.({ role: 'assistant', text: reply }); } catch { /* 同上 */ }
       if (body.stream === true) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

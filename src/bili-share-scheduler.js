@@ -207,9 +207,12 @@ export function createBiliShareScheduler({
         const prompt = buildSharePrompt(card, timeLabel, { mode: getMode(), cardSent });
         let promptOk = false;
         try {
-          await deliverPrompt(key, prompt);
-          promptOk = true;
-          log(`[B站分享] ${timeLabel} 已投递 ${key}：${String(card.title).slice(0, 30)}（${card.bvid || card.id}）`);
+          // deliverPrompt 多数情况下**不抛错**，失败时返回 {ok:false}。以前只要不抛就
+          // 当成投递成功，结果 slot 被标记已跑、当天内容静默缺失。
+          const result = await deliverPrompt(key, prompt);
+          promptOk = result?.ok !== false;
+          if (promptOk) log(`[B站分享] ${timeLabel} 已投递 ${key}：${String(card.title).slice(0, 30)}（${card.bvid || card.id}）`);
+          else log(`[B站分享] ${timeLabel} 投递被拒绝 ${key}：${result?.error || '未知原因'}`);
         } catch (error) {
           log(`[B站分享] ${timeLabel} 投递失败 ${key}：${error?.message ?? error}`);
         }

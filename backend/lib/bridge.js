@@ -197,8 +197,33 @@ function loadEmbedded() {
   }
 }
 
+/** src/bridge.js 的 mtime+size（与 loadEmbedded 的 cache key 同一口径）。 */
+function embeddedSourceKey() {
+  try {
+    const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/bridge.js');
+    const stat = fs.statSync(file);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return '';
+  }
+}
+
 export async function start({ dshWebUrl = '' } = {}) {
-  if (await portOpen()) return { ok: true, already: true, message: '桥接已经在跑' };
+  if (await portOpen()) {
+    // 端口已在（通常是本进程的内嵌桥）。以前这里直接 return already：
+    // 源码（src/bridge.js）改了、但内嵌实例还占着端口时，跑的还是旧模块 ——
+    // 「修了代码却没生效、必须手动重启 DSH」的根因。现在比对源码 mtime+size，
+    // 变了就停掉旧实例、重新 import 新代码再启动。
+    const keyNow = embeddedSourceKey();
+    if (embeddedModulePromise && embeddedModuleKey && keyNow && keyNow !== embeddedModuleKey) {
+      appendSupervisorLog(`检测到桥接源码已更新（${embeddedModuleKey} → ${keyNow}），自动热重载`);
+      try { await stop(); } catch { /* 停失败也继续尝试重载 */ }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      // 继续走下面的启动流程（会用新 key 重新 import）。
+    } else {
+      return { ok: true, already: true, message: '桥接已经在跑' };
+    }
+  }
   try {
     const mod = await loadEmbedded();
     const result = await mod.startEmbedded({ dshWebUrl });
@@ -276,22 +301,28 @@ export async function stop() {
 }
 
 export async function restart(options = {}) {
-  // 内嵌模式不能真的重启进程（那会带走 DSH），改成配置热重载 + 重连 SnowLuma。
+  // 内嵌模式不能真重启进程（那会带走 DSH）。但源码变过时要换掉旧模块：
+  //   · 先停**旧**实例（此时 embeddedModulePromise 还指向旧模块，stopEmbedded 能正常收掉）；
+  //   · 再清空 promise，让 start() 里的 loadEmbedded() 按新 mtime 重新 import。
+  // 以前是先 loadEmbedded() 把引用换成新模块，再 stop() —— 旧实例已无引用，
+  // stop() 只能走 PowerShell / lock pid 兜底，有误杀 DSH 进程的风险。
+  let stoppedEmbedded = null;
   try {
     if (embeddedModulePromise) {
-      const mod = await loadEmbedded();
-      const reloaded = await mod.reloadEmbedded();
-      if (reloaded?.ok) {
-        appendSupervisorLog(`内嵌桥接热重载：${reloaded.message ?? 'ok'}`);
-        return { ...reloaded, restarted: true };
-      }
+      const oldMod = await embeddedModulePromise.catch(() => null);
+      const r = await oldMod?.stopEmbedded?.();
+      stoppedEmbedded = r ?? null;
+      embeddedModulePromise = null;
+      embeddedModuleKey = '';
     }
-  } catch {}
-  const stopped = await stop();
-  if (!stopped.ok) return stopped;
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  } catch { /* 停旧实例失败就继续尝试下面的停止流程 */ }
+  if (!stoppedEmbedded?.stopped) {
+    const stopped = await stop();
+    if (!stopped.ok) return stopped;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
   const started = await start(options);
-  return { ...started, restarted: started.ok, stop: stopped };
+  return { ...started, restarted: started.ok, stop: stoppedEmbedded ?? { ok: true, message: '内嵌桥接已停止' } };
 }
 
 export async function refreshConfig() {

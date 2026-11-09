@@ -4650,12 +4650,22 @@ export default {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-pet-token': String(host.token) },
           body: JSON.stringify({ text, modality: 'text' }),
-          signal: AbortSignal.timeout(60000),
+          // 服务端桌宠对话的超时是 90s（pet-chat CHAT_LLM_TIMEOUT_MS）：
+          // 这里必须比它长，否则「正常但稍慢」的回复会被前端提前放弃，
+          // 静默降级成挂件自带模型 —— 用户会以为她失忆/换了个人。
+          signal: AbortSignal.timeout(150000),
         })
         const body = await r.json().catch(() => null)
-        if (!r.ok || !body || !body.ok || !body.reply || typeof body.reply.text !== 'string') return null
+        if (!r.ok || !body || !body.ok || !body.reply || typeof body.reply.text !== 'string') {
+          // 保留失败原因，便于诊断为什么降级（原来直接 return null，现场无迹可查）。
+          console.warn('[pet-ai] SurfCore 对话失败，回退挂件模型:', (body && (body.error || body.message)) || `HTTP ${r.status}`)
+          return null
+        }
         return { text: body.reply.text, audioKey: (body.reply.audio && body.reply.audio.key) || '' }
-      } catch (err) { return null }
+      } catch (err) {
+        console.warn('[pet-ai] SurfCore 对话异常，回退挂件模型:', (err && err.message) || err)
+        return null
+      }
     }
     /**
      * 通用 SurfCore pet-api 请求：读 host.json 拿 baseUrl + token。

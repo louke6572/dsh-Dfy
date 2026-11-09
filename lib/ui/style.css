@@ -120,7 +120,7 @@ body[data-ds-dark-theme] .qbw-app .qbw-nav-groups button.on{background:var(--qbw
 .qbw-app .qbw-btn2:hover:not(:disabled){border-color:var(--qbw-accent);color:var(--qbw-accent);filter:none}
 .qbw-app .qbw-btn3{background:transparent;border-color:transparent;color:var(--qbw-t3);padding:0 8px}
 .qbw-app .qbw-btn3:hover:not(:disabled){color:var(--qbw-t1);background:var(--qbw-sunken);filter:none}
-.qbw-app .qbw-btn.danger{background:#d9383d;border-color:transparent}
+.qbw-app .qbw-btn.danger{background:#d9383d;border-color:transparent;color:#fff}
 .qbw-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--qbw-bd)}
 
 /* 底部 */

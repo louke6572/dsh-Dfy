@@ -131,13 +131,19 @@ class DshBridge(Star):
             return
         text = str(getattr(event, "message_str", "") or "").strip()
         if not text:
-            # 纯图片/表情等非文本消息：v1 不转发（避免把空文本灌进会话）
+            # 纯图片/表情/语音等非文本消息：v1 不转发（避免把空文本灌进会话），
+            # 但**不能什么都不回**——以前直接 return，用户发图给机器人会以为它死了。
+            try:
+                yield event.plain_result("（图片/语音我收到啦，先用文字跟我说一句吧）")
+            except Exception:
+                pass
             return
         # 关键：跳过 AstrBot 默认 LLM，否则会和 DSH 的回复变成两条。
         try:
             event.should_call_llm(False)
         except Exception:
             event.call_llm = False
+            logger.debug("[dsh-bridge] should_call_llm 不可用，已退回设置 call_llm=False")
         logger.debug("[dsh-bridge] 收到 QQ 消息 → DSH")
         # 等待 DSH 想完再回：先让 QQ 侧显示「正在输入」，明显降低体感延迟
         try:
@@ -149,3 +155,6 @@ class DshBridge(Star):
         reply = await self._ask_dsh(umo, text)
         if reply:
             yield event.plain_result(reply)
+        else:
+            # 大脑返回空串时以前什么都不发 → 用户以为被无视。给一句可操作的兜底。
+            yield event.plain_result("（我这边刚才没想出来，你再说一次？）")

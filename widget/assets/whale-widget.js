@@ -16881,7 +16881,20 @@ function scheduleBubbleFit() {
 }
 // 覆盖接口刷新、自定义余额应用/取消、数字滚动及异步图片加载；同帧多次变化只测一次。
 try {
-  var bubbleContentObserver = new MutationObserver(scheduleBubbleFit)
+  // 倒计时每秒改一次文字（等长数字）会触发 characterData/childList 变异，以前无条件
+  // 进 scheduleBubbleFit → bubbleFitContent（树遍历 + 多次二分 fits）+ applyBubbleAvoid
+  // + petRefitNow，等于整个泡泡每秒重排一次，是持续卡顿/发热源。
+  // 现在：这次变异如果全部只发生在倒计时行、且文字长度没变，就跳过重排。
+  var bubbleContentObserver = new MutationObserver(function (muts) {
+    try {
+      if (muts && muts.length && bubbleCountdownEls.size
+        && muts.every(function (m) {
+          var t = m.target
+          return t && bubbleCountdownEls.has(t) && t.__dshwvLenChanged === false
+        })) return
+    } catch (err) {}
+    scheduleBubbleFit()
+  })
   bubbleContentObserver.observe(textBox, { childList: true, characterData: true, subtree: true })
   bubbleBox.addEventListener('load', scheduleBubbleFit, true)
   new ResizeObserver(scheduleBubbleFit).observe(root)
@@ -21113,6 +21126,9 @@ function bubbleCountdownText() {
 }
 var bubbleCountdownTicker = null
 var bubbleCountdownRows = [] // {el, mod}
+// 倒计时行元素集合：MutationObserver 用它判断「这次变异是不是倒计时每秒刷数字」。
+// 如果是，且文字长度没变，就不需要整泡重排版（见 schedule 的 observer）。
+var bubbleCountdownEls = new Set()
 function bubbleCountdownApplyStyle(el, mod, peak) {
   try {
     var rgb = peak ? (mod.peakRgb || '') : (mod.offRgb || '')
@@ -21140,7 +21156,11 @@ function bubbleCountdownTick() {
     for (var i = 0; i < bubbleCountdownRows.length; i++) {
       var x = bubbleCountdownRows[i]
       try {
-        x.el.textContent = bubbleCountTextOf(x.mod)
+        var nextText = bubbleCountTextOf(x.mod)
+        var prevLen = String(x.el.textContent || '').length
+        x.el.textContent = nextText
+        // 记录长度是否变化：等长纯数字刷新不需要重排，长度变了（59分→1小时）才需要。
+        x.el.__dshwvLenChanged = prevLen !== nextText.length
         bubbleCountdownApplyStyle(x.el, x.mod, cur)
       } catch (err) {}
     }
@@ -21164,6 +21184,7 @@ function bubbleCountdownTick() {
 }
 function bubbleCountdownRegister(el, mod) {
   bubbleCountdownRows.push({ el: el, mod: mod })
+  try { bubbleCountdownEls.add(el) } catch (err) {}
   if (!bubbleCountdownTicker) bubbleCountdownTicker = setInterval(bubbleCountdownTick, 1000)
 }
 // —— v733：峰谷状态实时跟随 ——
@@ -27416,6 +27437,16 @@ function petQqCardShow() {
     petQqCardBuild()
     petQqCardApplyTheme()
     petQqCardApplyMode()
+    // 发送按钮态必须每次打开都对一遍：卡在「发送中」时关闭再打开，按钮会一直是上次的
+    // 禁用「✓」（hide/build 都不复位 petQqCardSending）。这里按真实状态同步一次。
+    try {
+      if (petQqCardSendEl) {
+        petQqCardSendEl.disabled = Boolean(petQqCardSending)
+        petQqCardSendEl.textContent = petQqCardSending ? '✓' : '发送 ▶'
+        if (petQqCardSending) petQqCardSendEl.classList.add('dshwv-qqcard-ok')
+        else petQqCardSendEl.classList.remove('dshwv-qqcard-ok')
+      }
+    } catch (err) {}
     petQqCardRender()
     petQqCardPosition()
     petQqCardEl.classList.add('dshwv-qqcard-open')
@@ -27501,7 +27532,13 @@ function petQqCardFeed(ev) {
   if (!petQqOwnerKey) petQqCardFetchHistory()
   // 卡片开着就直接把新消息补进列表；关着只加信封角标，不打断当前操作
   if (petQqCardEl && petQqCardEl.classList.contains('dshwv-qqcard-open')) {
-    petQqCardShow()
+    // 已开时不要再走 petQqCardShow()：它会整卡 build（全量重建 DOM + 收起气泡），
+    // 消息连发时表现为反复闪动、逐字打字机永远从头开始打不完。
+    // 这里只增量刷新列表与最新一条，并续上自动收起计时。
+    petQqCardRender()
+    petQqCardPosition()
+    try { petQqCardScheduleHide() } catch (err) {}
+    try { if (typeof petQqCardSetCount === 'function') petQqCardSetCount() } catch (err) {}
     return
   }
   petQqUnread += 1
@@ -27510,7 +27547,11 @@ function petQqCardFeed(ev) {
 function petQqCardFetchHistory() {
   petAiFetch('/dsh-whale/qq-sync.json?history=1&limit=12', { cache: 'no-store' }).then(function (d) {
     try {
-      if (!d || !d.ok) return
+      if (!d || !d.ok) {
+        // 读历史失败时给一句明确提示，别让它看起来像「一条消息都没有」。
+        try { petQqCardHint('读取记录失败：' + String((d && (d.error || d.message)) || '接口不可用')) } catch (err) {}
+        return
+      }
       if (d.ownerKey) petQqOwnerKey = String(d.ownerKey)
       if (d.owner && d.owner.name) petQqOwnerName = String(d.owner.name)
       var msgs = Array.isArray(d.messages) ? d.messages : []
@@ -27872,7 +27913,17 @@ function petQqRefresh() {
   if (!petChatListEl) return
   petQqHistory(50).then(function (d) {
     try {
-      if (!d || !d.ok) return
+      if (!d || !d.ok) {
+        // 读取失败不能伪装成「没有消息」：以前直接 return，用户看到空列表会以为记录丢了。
+        petChatListEl.textContent = ''
+        var errRow = document.createElement('div')
+        errRow.className = 'dshwv-qqlog'
+        errRow.style.textAlign = 'center'
+        errRow.style.color = '#94a3b8'
+        errRow.textContent = '读取失败：' + String((d && (d.error || d.message)) || '接口不可用') + '（稍后重试）'
+        petChatListEl.appendChild(errRow)
+        return
+      }
       var msgs = Array.isArray(d.messages) ? d.messages : []
       // 统一成对话窗的最小结构：{role, content}
       petChatRender(msgs.map(function (m) {
@@ -28244,7 +28295,7 @@ function petEnable(byUser) {
     if (!ok) {
       // issue #6：不要只弹「已回退默认角色」——要告诉用户缺什么、放哪里、怎么修。
       var tip = petAnimsMissingHint || ('桌宠素材缺失：assets/pet-video/ 不存在或为空。' +
-        '请重装最新版 dsh-Dfy（插件市场更新，或 github:louke6572/surfcore），或把 106 段 .webm 放进 ' +
+        '请重装最新版 dsh-Dfy（插件市场更新，或 github:louke6572/dsh-Dfy），或把 106 段 .webm 放进 ' +
         (petAnimsMissingDir || '插件目录/assets/pet-video/') + ' 后刷新页面。')
       try { dshwvToast(tip) } catch (err) {}
       return

@@ -31,11 +31,10 @@ import { adminFromSources } from '../../src/admin-identity.js';
 import { PET_DATA_DIR } from './paths.js';
 import { appendMemoryInboxEvent } from '../../src/memory-card.js?rev=20261025-pet-memory2';
 import { wavDurationMs } from '../../src/voice-tts.js';
-import { synthesizeEdgeToFile } from '../../src/voice-edge-tts.js';
-import { synthesizeToFile as synthesizeVoxdToFile } from '../../src/voice-tts.js';
-import { synthesizeOnlineToFile, DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from '../../src/voice-online-tts.js';
-import { synthesizeDoubaoToFile, DOUBAO_DEFAULT_VOICE } from '../../src/voice-doubao-tts.js';
-import { synthesizeQwenToFile, QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from '../../src/voice-qwen-tts.js';
+import { synthesizeToFileByRoute } from '../../src/voice-routes.mjs';
+import { DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from '../../src/voice-online-tts.js';
+import { DOUBAO_DEFAULT_VOICE } from '../../src/voice-doubao-tts.js';
+import { QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from '../../src/voice-qwen-tts.js';
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFile = promisify(_execFile);
@@ -628,7 +627,9 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         historyTurns: s.chat.historyTurns,
       },
       proactive: s.proactive,
-      voice: { enabled: s.voice.enabled, route: 'edge', maxChars: s.voice.maxChars },
+      // route 必须读真实音源：以前写死 'edge'，用户切到豆包/千问后状态面板仍显示 edge，
+      // 会误以为「没切换成功」。
+      voice: { enabled: s.voice.enabled, route: voiceSettings().route, maxChars: s.voice.maxChars },
       focus: readFocus(),
     };
   }
@@ -647,81 +648,25 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     try {
       let resultPath, durationMs, ext, realKey;
 
-      if (v.route === 'doubao') {
-        const r = await synthesizeDoubaoToFile({
-          text: spoken,
-          // 新版控制台只有 API Key（V3）；旧版 AppID + Token（V1）仍兼容。
-          apiKey: v.doubaoApiKey,
-          resourceId: v.doubaoResourceId,
-          appId: v.doubaoAppId,
-          accessToken: v.doubaoToken,
-          voice: v.doubaoVoice,
-          encoding: v.doubaoEncoding,
-          timeoutMs: v.timeoutMs,
-          cacheVersion: v.cacheVersion,
-          outDir: voiceDir,
-        });
-        resultPath = r.path;
-        durationMs = r.durationMs || 0;
-        ext = r.format === 'ogg_opus' ? '.ogg' : (r.format === 'wav' ? '.wav' : '.mp3');
-      } else if (v.route === 'qwen') {
-        const r = await synthesizeQwenToFile({
-          text: spoken,
-          apiKey: v.qwenApiKey,
-          voice: v.qwenVoice,
-          model: v.qwenModel,
-          language: v.qwenLanguage,
-          timeoutMs: v.timeoutMs,
-          cacheVersion: v.cacheVersion,
-          outDir: voiceDir,
-        });
-        resultPath = r.path;
-        try { durationMs = wavDurationMs(fs.readFileSync(r.path)); } catch { durationMs = 0; }
-        ext = '.wav';
-      } else if (v.route === 'online') {
-        // 免费在线模型（HuggingFace Space）：音色由「声音描述」决定，输出 wav。
-        const r = await synthesizeOnlineToFile({
-          text: spoken,
-          description: v.onlineDesc,
-          language: v.onlineLanguage,
-          timeoutMs: Math.max(v.timeoutMs, 120000),
-          cacheVersion: v.cacheVersion,
-          outDir: voiceDir,
-        });
-        resultPath = r.path;
-        try { durationMs = wavDurationMs(fs.readFileSync(r.path)); } catch { durationMs = 0; }
-        ext = '.wav';
-      } else if (v.route !== 'edge') {
-        // 本地 / 云端 voxd：直接产出 wav（24k 单声道），桌宠和消息卡片都能直接播，不用 ffmpeg。
-        // 音色名用这条通道自己的（localVoice/cloudVoice），Edge 的音色 id 在这里没有意义。
-        const baseUrl = v.route === 'local' ? v.localBaseUrl : v.cloudBaseUrl;
-        const character = String((v.route === 'local' ? v.localVoice : v.cloudVoice) || '').trim();
-        const r = await synthesizeVoxdToFile({
-          text: spoken,
-          character,
-          voice: character,
-          baseUrl,
-          timeoutMs: v.timeoutMs,
-          cacheVersion: v.cacheVersion,
-          outDir: voiceDir,
-        });
-        resultPath = r.path;
-        durationMs = r.durationMs;
-        ext = '.wav';
-      } else {
-        // Edge TTS：微软 readaloud/edge/v1 公开端点，输出 mp3
-        const r = await synthesizeEdgeToFile({
-          text: spoken,
-          voice: talkVoice,
-          rate: talkRate,
-          pitch: talkPitch,
-          timeoutMs: v.timeoutMs,
-          outDir: voiceDir,
-        });
-        resultPath = r.path;
-        durationMs = r.durationMs;
-        ext = '.mp3';
-        // 桌宠需要 wav → ffmpeg 转码
+      // 六音源统一走 src/voice-routes.mjs（与 QQ 语音条同一个实现，避免两份 if-else 漂移）。
+      // edge 的音色/语速只对朗读有意义，其它音源用各自配置里的音色，所以这里只有 edge 传 voice。
+      const r = await synthesizeToFileByRoute({
+        text: spoken,
+        voice: v.route === 'edge' ? talkVoice : '',
+        rate: talkRate,
+        pitch: talkPitch,
+        route: v.route,
+        tts: v,
+        timeoutMs: v.timeoutMs,
+        outDir: voiceDir,
+      });
+      resultPath = r.path;
+      durationMs = r.durationMs || 0;
+      ext = r.format === 'ogg_opus' || r.format === 'ogg' ? '.ogg'
+        : (r.format === 'wav' ? '.wav' : '.mp3');
+
+      if (v.route === 'edge') {
+        // 桌宠需要 wav → ffmpeg 转码（Edge 输出 mp3）
         const wavPath = path.join(voiceDir, `${path.basename(resultPath, '.mp3')}.wav`);
         const cfg = qqConfig();
         const ffmpegPath = process.env.FFMPEG_PATH
@@ -1100,12 +1045,18 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         lastPollAt: online().lastSeenAt,
       },
       presence: { online: online().online, lastSeenAt: online().lastSeenAt, clients: p.size },
-      voice: {
-        enabled: s.voice.enabled,
-        route: 'edge',
-        maxChars: s.voice.maxChars,
-        endpoint: 'edge（微软在线）',
-      },
+      voice: (() => {
+        const v = voiceSettings();
+        const endpointLabel = {
+          edge: 'edge（微软在线）',
+          local: 'local（本机 voxd 8765）',
+          cloud: 'cloud（火山复刻 8767）',
+          online: 'online（免费在线模型）',
+          doubao: 'doubao（火山豆包）',
+          qwen: 'qwen（阿里百炼）',
+        }[v.route] || v.route;
+        return { enabled: s.voice.enabled, route: v.route, maxChars: s.voice.maxChars, endpoint: endpointLabel };
+      })(),
       focus: readFocus(),
       llm: (() => {
         const target = resolveModel();

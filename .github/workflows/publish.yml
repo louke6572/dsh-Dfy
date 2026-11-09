@@ -66,6 +66,9 @@ jobs:
           node widget/tools/check-dead-settings.mjs
           node widget/tools/expr-smoke.mjs
 
+      - name: 出站安全审计
+        run: node widget/tools/outbound-safety-audit.mjs
+
       - name: 核心不变量审计
         run: node widget/tools/ci-audit.mjs --no-pack
 

@@ -21,7 +21,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { BILI_CRED, OWNER_BILI_CRED } from './paths.js';
-import { readBiliConfig, saveBiliConfig } from './store.js';
+import { readBiliConfig, saveBiliConfig, saveUnified } from './store.js';
 
 const LOGIN_URL = 'https://passport.bilibili.com/login';
 const SESSION_TTL_MS = 170_000;      // B站 二维码大约 180 秒过期，留 10 秒余量
@@ -274,6 +274,11 @@ function writeOwnerCredentials(cookies, account) {
   const tmp = `${OWNER_BILI_CRED}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, OWNER_BILI_CRED);
+  // 主人扫码绑定成功后，把身份 mid 也写进 unified.admin：QQ⇄B站 身份对齐读的是
+  // admin.biliMid（以前只写凭据文件，扫码后对齐仍不生效，得去 QQ 页再手填一次）。
+  try {
+    saveUnified({ admin: { biliMid: payload.mid, biliName: payload.name } });
+  } catch { /* 写失败不影响登录本身；QQ 页管理员卡片仍可手填 */ }
   return { mid: payload.mid, name: payload.name, savedAt: payload.savedAt };
 }
 
@@ -291,11 +296,21 @@ function writeFishCredentials(cookies, account) {
   const tmp = `${BILI_CRED}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, BILI_CRED);
-  try {
-    const bili = readBiliConfig().config;
-    bili.self = { mid: payload.mid, name: payload.name };
-    saveBiliConfig(bili);
-  } catch { /* 配置写失败不影响凭据本身；下次保存设置会再写 */ }
+  // 写配置必须重试，且不能静默吞掉：以前失败时凭据已是新号、配置还是旧 self.mid，
+  // 下次扫码归属校验会误报「不是当前小肥鱼」，而且没人知道为什么。
+  let configError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const bili = readBiliConfig().config;
+      bili.self = { mid: payload.mid, name: payload.name };
+      saveBiliConfig(bili);
+      configError = null;
+      break;
+    } catch (error) { configError = error; }
+  }
+  if (configError) {
+    throw new Error(`B站 凭据已保存，但账号信息写入配置失败（${configError?.message ?? configError}）；请到 平台 → B站 点一次「保存」后重试。`);
+  }
   return { mid: payload.mid, name: payload.name, savedAt: payload.savedAt };
 }
 

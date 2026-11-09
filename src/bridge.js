@@ -43,11 +43,13 @@ import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
-import { synthesizeEdgeToFile, DEFAULT_EDGE_VOICE } from './voice-edge-tts.js';
-import { synthesizeToFile as synthesizeVoxdToFile, DEFAULT_BASE_URL as DEFAULT_VOXD_URL } from './voice-tts.js';
-import { synthesizeOnlineToFile, DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from './voice-online-tts.js';
-import { synthesizeDoubaoToFile, DOUBAO_DEFAULT_VOICE } from './voice-doubao-tts.js';
-import { synthesizeQwenToFile, QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from './voice-qwen-tts.js';
+import { DEFAULT_EDGE_VOICE } from './voice-edge-tts.js';
+import { DEFAULT_BASE_URL as DEFAULT_VOXD_URL } from './voice-tts.js';
+import { DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from './voice-online-tts.js';
+import { DOUBAO_DEFAULT_VOICE } from './voice-doubao-tts.js';
+import { QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from './voice-qwen-tts.js';
+import { synthesizeToFileByRoute } from './voice-routes.mjs';
+import { redactLocalPaths } from './redact-paths.mjs';
 import { classifyVoiceError } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -2215,7 +2217,7 @@ async function main(options = {}) {
     if (!vc.tts.enabled) {
       const err = new Error('语音合成未开启（socialV2.voice.tts.enabled）');
       err.code = 'voice.tts-disabled'; err.stage = 'config';
-      err.hint = '设置 → SurfCore → 语音设置 → 打开「语音合成总开关」';
+      err.hint = '去 设置 → dsh-Dfy → 桌宠 → 语音设置，打开「允许 AI 发语音条（总闸）」和「语音合成开关」';
       throw err;
     }
     if (say.length > vc.tts.maxChars) throw codedVoiceError(new Error(`要说的话最多 ${vc.tts.maxChars} 字（收到 ${say.length}）`));
@@ -2243,86 +2245,16 @@ async function main(options = {}) {
    */
   async function synthesizeByRoute({ text, voice = '', rate = '+0%', pitch = '+0Hz', timeoutMs, route: routeOverride = '' } = {}) {
     const vc = voiceCfg();
-    // 单次请求可以覆盖音源（外部工具按 route 指定），否则用设置页保存的那一路。
-    const route = ['edge', 'local', 'cloud', 'online', 'doubao', 'qwen'].includes(String(routeOverride))
-      ? String(routeOverride)
-      : vc.tts.route;
-    if (route === 'doubao') {
-      const result = await synthesizeDoubaoToFile({
-        text,
-        // 新版控制台只有 API Key → 走 V3；旧的 AppID + Access Token 仍兼容。
-        apiKey: vc.tts.doubaoApiKey,
-        resourceId: vc.tts.doubaoResourceId,
-        appId: vc.tts.doubaoAppId,
-        accessToken: vc.tts.doubaoToken,
-        voice: voice || vc.tts.doubaoVoice,
-        encoding: vc.tts.doubaoEncoding,
-        timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : vc.tts.timeoutMs,
-        cacheVersion: vc.tts.cacheVersion ?? null,
-        outDir: vc.tts.dir,
-      });
-      const contentType = result.format === 'ogg_opus'
-        ? 'audio/ogg'
-        : (result.format === 'wav' ? 'audio/wav' : 'audio/mpeg');
-      return { path: result.path, cached: result.cached, durationMs: result.durationMs, route, contentType };
-    }
-    if (route === 'qwen') {
-      const result = await synthesizeQwenToFile({
-        text,
-        apiKey: vc.tts.qwenApiKey,
-        voice: voice || vc.tts.qwenVoice,
-        model: vc.tts.qwenModel,
-        language: vc.tts.qwenLanguage,
-        timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : vc.tts.timeoutMs,
-        cacheVersion: vc.tts.cacheVersion ?? null,
-        outDir: vc.tts.dir,
-      });
-      return { path: result.path, cached: result.cached, durationMs: result.durationMs, route, contentType: 'audio/wav' };
-    }
-    if (route === 'online') {
-      // 免费在线模型：不需要音色 id，声音由「声音描述」决定。
-      const result = await synthesizeOnlineToFile({
-        text,
-        description: vc.tts.onlineDesc,
-        language: vc.tts.onlineLanguage,
-        timeoutMs: Number(timeoutMs) > 0 ? Math.max(Number(timeoutMs), 120000) : 180000,
-        cacheVersion: vc.tts.cacheVersion ?? null,
-        outDir: vc.tts.dir,
-      });
-      return { path: result.path, cached: result.cached, durationMs: 0, route: 'online', contentType: 'audio/wav' };
-    }
-    if (route === 'local' || route === 'cloud') {
-      const baseUrl = route === 'local' ? vc.tts.localBaseUrl : vc.tts.cloudBaseUrl;
-      const character = String(
-        voice
-        || (route === 'local' ? vc.tts.localVoice : vc.tts.cloudVoice)
-        || vc.tts.character
-        || ''
-      ).trim();
-      const result = await synthesizeVoxdToFile({
-        text,
-        character,
-        voice: character,
-        baseUrl,
-        timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : vc.tts.timeoutMs,
-        cacheVersion: vc.tts.cacheVersion ?? null,
-        outDir: vc.tts.dir,
-      });
-      return {
-        path: result.path, cached: result.cached, durationMs: result.durationMs,
-        route, contentType: 'audio/wav',
-      };
-    }
-    const result = await synthesizeEdgeToFile({
+    // 六音源分发统一在 src/voice-routes.mjs（与桌宠朗读共用一份实现，避免两边漂移）。
+    return synthesizeToFileByRoute({
       text,
-      voice: voice || vc.tts.edgeVoice || DEFAULT_EDGE_VOICE,
+      voice,
       rate,
       pitch,
-      timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : vc.tts.timeoutMs,
-      cacheVersion: vc.tts.cacheVersion ?? null,
-      outDir: vc.tts.dir,
+      route: routeOverride,
+      tts: { ...vc.tts, dir: vc.tts.dir },
+      timeoutMs,
     });
-    return { path: result.path, cached: result.cached, durationMs: result.durationMs, route: 'edge', contentType: 'audio/mpeg' };
   }
 
   function voiceLibrary() {
@@ -3295,6 +3227,46 @@ async function main(options = {}) {
   const collectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
+  // 待退役会话：sessionId -> { key, at }。回合在途时先保留映射与订阅，
+  // 等 turn/end 把这一轮回复发完，再真正停用并归档（避免「已生成回复静默蒸发」）。
+  const retiringSessions = new Map();
+  // 唤醒失败 / 额度耗尽的通知节流：key -> 时间戳。只在「有人明确在叫她」时提醒，
+  // 主动叫醒失败不打扰（避免刷屏）。
+  const wakeFailureNotifiedAt = new Map();
+  const quotaBlockedNotifiedAt = new Map();
+  // 本回合是否成功调用过发送工具：sessionId -> { sent, at }。
+  // reserved2 模式下模型应通过 qq_send_message 发送；若整轮都没成功调用，
+  // 私聊里至少降级把文本发出去，避免「她明明回了却什么都不发」。
+  const turnSendToolState = new Map();
+
+  /** 唤醒投递失败时给用户一条可见提示（仅限被 @/叫名字/私聊），10 分钟限频。 */
+  function notifyWakeFailure(key, reason, error) {
+    try {
+      const direct = isHardDirectWakeReason(reason) || String(key ?? '').startsWith('private:');
+      if (!direct) return;
+      const now = Date.now();
+      if (now - (wakeFailureNotifiedAt.get(key) ?? 0) < 10 * 60_000) return;
+      wakeFailureNotifiedAt.set(key, now);
+      const detail = String(error?.message ?? error ?? '').slice(0, 120);
+      const assertSendAllowed = captureSendGuard(key);
+      assertSendAllowed();
+      sendToQQ(key, `⚠️ 这条没接上：${detail || 'DSH 没响应'}。稍后再叫我一次，或去 设置 → dsh-Dfy → 维护 看诊断。`);
+    } catch { /* 提示发不出去也不能影响唤醒流程 */ }
+  }
+
+  /** 额度/次数耗尽时给用户一次可见提示（仅限被点名/私聊），6 小时限频。 */
+  function notifyQuotaBlocked(key, reason, block) {
+    try {
+      const direct = isHardDirectWakeReason(reason) || String(key ?? '').startsWith('private:');
+      if (!direct) return;
+      const now = Date.now();
+      if (now - (quotaBlockedNotifiedAt.get(key) ?? 0) < 6 * 3600_000) return;
+      quotaBlockedNotifiedAt.set(key, now);
+      const assertSendAllowed = captureSendGuard(key);
+      assertSendAllowed();
+      sendToQQ(key, `⚠️ 今天自动回复的次数/额度用完了，暂时不自动回。可以去 设置 → dsh-Dfy → 额度 调高，或明天再来；你的消息我留着没丢。`);
+    } catch { /* 同上 */ }
+  }
   const toolCallNames = new Map(); // sessionId -> Map<callId, toolName>：用于结果日志关联工具名
   const pendingSendToolCalls = new Map(); // sessionId -> Set<callId>：等待 tool/result 的发送类调用
   // reserved2 防“忘记设置唤醒条件”：key -> 当前是否等待 AI 处理唤醒回合 / 本回合已更新唤醒配置 / 连续未设置次数
@@ -3708,15 +3680,29 @@ async function main(options = {}) {
     markReadCalledKeys.delete(key);
   }
 
-  function retireSession(key) {
+  function retireSession(key, { reason = '权限变化' } = {}) {
     const sessionId = state.sessions[key];
+    // 回合在途时不能立刻退役：collectors/reverse/事件订阅一删，已经生成好的回复
+    // 会在 pumpMux 里因为「key 找不到 / 会话不再当前」被静默丢弃（token 已花、QQ 收不到）。
+    // 记成「待退役」，让这一轮先把回复送出去，turn/end 后再真正停用归档。
+    if (sessionId && v2TurnStartAt.has(sessionId) && !retiringSessions.has(sessionId)) {
+      retiringSessions.set(sessionId, { key, at: Date.now(), reason });
+      reverse.set(sessionId, key); // 保留反查：否则 pumpMux 拿不到 key，回复照样丢
+      log(`会话${reason}但回合在途：先让这一轮回完再停用 ${key} -> ${sessionId}`);
+      delete state.sessions[key];
+      delete state.sessionPolicies[key];
+      forgetConversationCaches(key);
+      contextPrimed.delete(key);
+      saveState();
+      return true;
+    }
     delete state.sessions[key];
     delete state.sessionPolicies[key];
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
     contextPrimed.delete(key);
-    if (!sessionId) return;
+    if (!sessionId) return false;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
     sessionModels.delete(sessionId);
@@ -4171,7 +4157,7 @@ async function main(options = {}) {
       dedupeKey: 'snowluma:send-channel-down',
     });
     log(`❌ SnowLuma 发送通道不可用（已持续 ${Math.round((now - snowlumaHealth.downSince) / 1000)} 秒）；自动唤醒已暂停，避免空烧 token。`);
-    log('   处理：设置 → SurfCore → 运行状态 → 点「一键启动」SnowLuma，或手动运行 launcher.bat 并确认 HTTP :3000 / WS :3001 可用。');
+    log('   处理：设置 → dsh-Dfy → 运行 → 概览 点「一键开始」，或手动运行 launcher.bat 并确认 HTTP :3000 / WS :3001 可用。');
   }
 
   function notifySendChannelUp() {
@@ -5695,10 +5681,8 @@ async function main(options = {}) {
           if (!allowed(kind, id, cfg)) { sendJson({ ok: false, error: `目标不在白名单内（${kind} ${id}），请先加入白名单` }, 403); return; }
           if (!modeAllowed(`${kind}:${id}`, kind, id, cfg, currentMode)) { sendJson({ ok: false, error: `当前模式（${currentMode}）不允许向 ${kind}:${id} 发送测试消息` }, 403); return; }
           try {
-            const safeMessage = escapeCqText(redactKnownTokensOnly(message));
-            const result = kind === 'private'
-              ? await bot.sendPrivateMessage(id, text(safeMessage))
-              : await bot.sendGroupMessage(id, text(safeMessage));
+            // 统一走 onebotSend：令牌/违规/路径脱敏由收口函数负责，不再直连 OneBot 旁路。
+            const result = await withTimeout(onebotSend(kind, id, message), SEND_TIMEOUT_MS, `控制台测试发送 ${kind}:${id}`);
             log(`控制台：测试发送 ${kind}:${id} 成功`);
             sendJson({ ok: true, kind, id, message_id: result?.message_id ?? result });
           } catch (error) {
@@ -6813,10 +6797,9 @@ async function main(options = {}) {
             saveSocialV2State();
             log(`[reserved2] 工具分条发送 ${key}: 成功 ${sentMessages.length}/${messages.length} 条`);
             appendActivity(`${key} [reserved2] 工具分条发送：成功 ${sentMessages.length}/${messages.length} 条`);
-      // 大肥鱼表情包：分条发送成功后再补一张
-      if (sentMessages.length > 0) void sendNekoAfterReply(key, messages.join(' '));
             if (sentMessages.length > 0) scheduleReplyCheckV2(key);
-            // 大肥鱼表情包：工具发送（reserved2 模式的主路径）成功后再补一张
+            // 大肥鱼表情包：工具发送（reserved2 模式的主路径）成功后再补一张。
+            // 注意只能补一次：这里以前连着写了两行 sendNekoAfterReply，会补两张表情。
             if (sentMessages.length > 0) void sendNekoAfterReply(key, messages.join(' '));
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
@@ -7227,7 +7210,7 @@ async function main(options = {}) {
               name: 'send', ok: toolOn && v.enabled,
               detail: `${v.enabled ? '语音可用' : '语音总闸已关'} · 工具${cfg.socialV2?.tools?.sendVoice === false ? '关' : '开'} · 本分钟已发 ${perMin}/${v.maxPerMinute} · 本小时 ${perHour}/${v.maxPerHour}`,
               code: toolOn && v.enabled ? '' : 'voice.tool-disabled',
-              hint: toolOn && v.enabled ? '' : '设置 → SurfCore → 语音：打开总闸与「发语音」工具',
+              hint: toolOn && v.enabled ? '' : '去 设置 → dsh-Dfy → 桌宠 → 语音设置：打开总闸与「语音合成开关」',
             });
           }
           sendJson({ ok: stages.every((x) => x.ok), route, stages });
@@ -7239,6 +7222,10 @@ async function main(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/voice/preview') {
           const vc = voiceCfg();
           const voice = String(url.searchParams.get('voice') || '');
+          // 试听必须能指定「当前正在编辑的音源」：以前只按已保存的 route 合成，
+          // 用户切到豆包还没点保存就试听 → 实际用 edge 去合成豆包音色名 → 失败/无声，
+          // 让人误判「这个音色坏了」。这里透传 route，与设置页当前选择保持一致。
+          const routeParam = String(url.searchParams.get('route') || '');
           // 朗读音色试听要能带语速：设置页「朗读」卡片会传 rate（如 +10%）。Edge 与云端支持，本地引擎忽略。
           const rate = String(url.searchParams.get('rate') || '+0%');
           const pitch = String(url.searchParams.get('pitch') || '+0Hz');
@@ -7250,6 +7237,7 @@ async function main(options = {}) {
               voice,
               rate,
               pitch,
+              route: routeParam,
               timeoutMs: Math.min(Number(vc.tts.timeoutMs) || 60000, 30000),
             });
             const buf = fs.readFileSync(out.path);
@@ -7261,7 +7249,7 @@ async function main(options = {}) {
             });
             res.end(buf);
           } catch (error) {
-            const route = vc.tts.route;
+            const route = routeParam || vc.tts.route;
             sendJson({
               ok: false,
               error: `试听合成失败：${error?.message ?? error}`,
@@ -7450,7 +7438,7 @@ async function main(options = {}) {
             sendJson({
               ok: false, code: 'VOICE_DISABLED',
               error: '语音功能已关闭（总闸）',
-              hint: '设置 → SurfCore → 全部参数 → socialV2.voice.enabled 打开；或在控制台开启后再发',
+              hint: '去 设置 → dsh-Dfy → 系统 → 语音设置，打开「允许 AI 发语音条（总闸）」并保存',
             }, 403);
             return;
           }
@@ -7462,7 +7450,7 @@ async function main(options = {}) {
             sendJson({
               ok: false, code: 'VOICE_TOOL_DISABLED',
               error: '工具开关未启用：qq_send_voice',
-              hint: '设置 → SurfCore → 工具 → 「发语音」打开（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
+              hint: '去 设置 → dsh-Dfy → 平台 → QQ → 高级设置 → 二代·工具开关，打开 sendVoice（或 socialV2.tools.sendVoice=true），保存后点「保存并热重载」',
             }, 403);
             return;
           }
@@ -9066,9 +9054,10 @@ async function main(options = {}) {
           const percent = Math.max(0, Math.min(999, Number(body.percent) || 0));
           const chars = Math.max(0, Math.min(10_000_000, Number(body.chars) || 0));
           const maxChars = Math.max(0, Math.min(10_000_000, Number(body.maxChars) || 0));
-          const message = `【记忆卡】容量已到 ${percent}%（${chars}/${maxChars} 字）。该压缩了：打开 DSH → 设置 → SurfCore → 记忆。`;
+          const message = `【记忆卡】容量已到 ${percent}%（${chars}/${maxChars} 字）。该压缩了：打开 DSH → 设置 → dsh-Dfy → 角色 → 记忆卡与同步。`;
           try {
-            await withTimeout(bot.sendPrivateMessage(Number(cfg.ownerQQ), text(escapeCqText(message))), SEND_TIMEOUT_MS, '记忆卡告警私聊');
+            // 走统一发送收口（本机路径脱敏 / 令牌拦截 / 失败记账都在那里）。
+            await withTimeout(onebotSend('private', Number(cfg.ownerQQ), message), SEND_TIMEOUT_MS, '记忆卡告警私聊');
             memoryCardNotifyAt.set(level, now);
             log(`已私聊管理员记忆卡容量告警（${percent}%）`);
             auditOwner('memory.alert', {
@@ -9126,6 +9115,14 @@ async function main(options = {}) {
     }
     return s;
   }
+
+  /**
+   * 群聊出站兜底脱敏（实现见 src/redact-paths.mjs，可单测）。
+   * 2026-11 真实事故：表情 Markdown 图片行降级成文字发进群，公开了
+   * `C:\Users\<用户名>\...`。图片行本身已在 splitMarkdownImages 里被剥离；
+   * 这里再兜一层，防止模型/工具把路径写进普通文本。
+   */
+
 
   // 最近一次发送是否全部成功（按 key）。调用方据此决定要不要刷新「我发过言了」的时间戳 ——
   // 旧实现把发送失败吞成一行日志后**照常 resolve**，于是调用方以为发言成功，
@@ -9234,6 +9231,21 @@ async function main(options = {}) {
       const res = await fetch(rawUrl, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) throw new Error(`图片下载失败 HTTP ${res.status}`);
       bytes = Buffer.from(await res.arrayBuffer());
+    } else if (/^dshsticker:/i.test(String(rawUrl))) {
+      // 表情工具返回的是「不含路径的引用」（dshsticker:<文件名>），避免把 C:\Users\… 这类
+      // 本机路径写进 Markdown —— 一旦降级成文字发出去就是隐私泄漏（2026-11 真实事故）。
+      const name = decodeURIComponent(String(rawUrl).slice('dshsticker:'.length)).replace(/[\\/]/g, '');
+      if (!name) throw new Error('表情引用为空');
+      const candidates = [
+        path.join(SURFCORE_DIR, 'nekowhale-cache', 'nekowhale', 'gif', name),
+        path.join(STATE_DIR, 'nekowhale-cache', 'nekowhale', 'gif', name),
+      ];
+      let found = '';
+      for (const candidate of candidates) {
+        try { if (fs.statSync(candidate).isFile()) { found = candidate; break; } } catch { /* 继续找下一处 */ }
+      }
+      if (!found) throw new Error(`表情文件不存在：${name}`);
+      bytes = fs.readFileSync(found);
     } else {
       const file = rawUrl.startsWith('file://') ? new URL(rawUrl).pathname.replace(/^\/([A-Za-z]:)/, '$1') : rawUrl;
       bytes = fs.readFileSync(file);
@@ -9252,17 +9264,26 @@ async function main(options = {}) {
     const markdown = splitMarkdownImages(msg);
     msg = markdown.text;
     const assertSendAllowed = captureSendGuard(key);
-    const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
+    // 群聊是公开场合：出站文本再兜一层本机路径脱敏（图片行已在上面被剥离）。
+    const beforeRedact = redactKnownTokensOnly(msg);
+    const safeMsg = kind === 'group' ? redactLocalPaths(beforeRedact) : beforeRedact;
+    if (kind === 'group' && safeMsg !== beforeRedact) {
+      logThrottled('privacy:group-path', 60_000, `[privacy] 群聊出站文本含本机路径/文件 URL，已脱敏 (${key})`);
+    }
     if (kind === 'group') recordFishWindow(key, '我', selfUserId, { isSelf: true });
     const parts = splitForQQ(safeMsg);
     lastSendFailed.delete(key);
+    let partIndex = 0;
     for (const part of parts) {
+      // 第一段永远发出去：对方在你「话说到一半」时插话，只作废后面的分段，
+      // 不能把整条回复全丢掉 —— 否则就是「谁都没回」的空档（humanize 竞态）。
+      const isFirstPart = partIndex++ === 0;
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
           const cancelAt = burstCancelAt.get(key);
-          if (cfg.humanize?.burstBrake !== false && cancelAt && cancelAt > burstStartedAt) { log(`[humanize] 对方又说话了，剩余分段不发 (${key})`); return; }
+          if (!isFirstPart && cfg.humanize?.burstBrake !== false && cancelAt && cancelAt > burstStartedAt) { log(`[humanize] 对方又说话了，剩余分段不发 (${key})`); return; }
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
@@ -9286,7 +9307,10 @@ async function main(options = {}) {
         }
       });
     }
-    return sendChain;
+    // 返回「本批是否全部发送成功」。调用方（例如 B站动态同步）需要据此决定
+    // 能不能把这条内容标记为已推送 —— 以前返回 void，发送失败也会被当成成功，
+    // 于是动态永久丢失且日志还写「已同步」。
+    return sendChain.then(() => lastSendFailed.get(key) !== true);
   }
 
   /** 上一批发往该会话的消息是否全部成功。 */
@@ -9420,28 +9444,33 @@ async function main(options = {}) {
   // AI 用空格表示“这里要分成下一条消息”，桥接按空格拆条；
   // 不想分条时用标点连接、不加空格即可。单条消息只做 maxReplyChars（默认 500 字）安全硬拆。
   function planSocialTimeline(text, socialCfg) {
-    const src = String(text ?? '').replace(/\r\n/g, '\n').trim();
+    const raw = String(text ?? '').replace(/\r\n/g, '\n').trim();
+    if (!raw) return { main: [], followUp: null };
+    // 先把表情包等 Markdown 图片整段剥离，图片不参与分条：路径里即使带空格/换行，
+    // 也不会被 splitByCjkSpaces 拆碎 —— 拆碎后就认不出是图片，只能把 markdown 原样发出去
+    // （群里出现「![名字](C:\...\xxx.gif)」的根因）。图片作为独立条目追加，交由发送端转图片段。
+    const split = splitMarkdownImages(raw);
+    const src = split.text;
+    const imageParts = split.images.map((url) => `![](${url})`);
     const rawMaxChars = Number(socialCfg?.maxReplyChars ?? 500);
     const maxChars = Number.isFinite(rawMaxChars) && rawMaxChars >= 1 ? Math.floor(rawMaxChars) : 500;
     const enabled = socialCfg?.burstEnabled !== false;
-    if (!src) return { main: [], followUp: null };
+    if (!src) return { main: imageParts, followUp: null };
 
-    // 关闭分条：整条作为一条消息发送，只做安全硬拆
+    const planned = [];
     if (!enabled) {
-      return { main: splitLongSegment(src, maxChars).map(singleLineForQQ), followUp: null };
+      // 关闭分条：整条作为一条消息发送，只做安全硬拆
+      planned.push(...splitLongSegment(src, maxChars).map(singleLineForQQ));
+    } else {
+      // 按空格（含换行）拆成候选消息；每个候选再按 maxChars 安全硬拆
+      const parts = splitByCjkSpaces(src);
+      if (parts.length <= 1) {
+        planned.push(...splitLongSegment(parts[0] || src, maxChars).map(singleLineForQQ));
+      } else {
+        for (const part of parts) planned.push(...splitLongSegment(part, maxChars).map(singleLineForQQ));
+      }
     }
-
-    // 按空格（含换行）拆成候选消息；每个候选再按 maxChars 安全硬拆
-    const parts = splitByCjkSpaces(src);
-    if (parts.length <= 1) {
-      return { main: splitLongSegment(parts[0] || src, maxChars).map(singleLineForQQ), followUp: null };
-    }
-
-    const main = [];
-    for (const part of parts) {
-      main.push(...splitLongSegment(part, maxChars).map(singleLineForQQ));
-    }
-    return { main: main.filter(Boolean), followUp: null };
+    return { main: [...planned, ...imageParts].filter(Boolean), followUp: null };
   }
 
   // 分条发送：与 sendToQQ 共用同一 sendChain，严格顺序；条间随机间隔，
@@ -9464,14 +9493,29 @@ async function main(options = {}) {
 
     const sent = [];
     const burstStartedAt = Date.now();
-    for (let i = 0; i < messages.length; i++) {
-      const msg = humanizeReplyText(redactKnownTokensOnly(messages[i]));
-      const isLast = i === messages.length - 1;
+    // 分条回复里的表情包也是 Markdown 图片行（插件 sticker_send 返回）。
+    // sendToQQ 会把它拆成图片段，但这里以前原样当文字发 —— 群里就出现
+    // 「![名字](C:\...\xxx.gif)」这样一整行乱码文字。先统一抽取：文本走分条，
+    // 图片在文本之后按顺序补发。
+    lastSendFailed.delete(key); // 清掉上一轮的失败残留（否则本轮成功也被判失败）
+    const pendingImages = [];
+    const cleaned = [];
+    for (const raw of messages) {
+      const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(raw)));
+      // 群聊：文本再兜一层本机路径脱敏（图片已作为独立条目剥离，不会误伤）。
+      const textPart = kind === 'group' ? redactLocalPaths(split.text) : split.text;
+      if (textPart) cleaned.push(textPart);
+      if (split.images.length) pendingImages.push(...split.images);
+    }
+    for (let i = 0; i < cleaned.length; i++) {
+      const msg = cleaned[i];
+      const isLast = i === cleaned.length - 1;
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          noteSendSuccess(key);
           sent.push(msg);
         })
         .catch((error) => {
@@ -9486,6 +9530,20 @@ async function main(options = {}) {
         const delay = useLong ? randInt(longMin, longMax) : randInt(min, max);
         sendChain = sendChain.then(() => sleep(delay));
       }
+    }
+    // 文本发完后补发表情/图片（纯表情回复也能发出去）。
+    if (pendingImages.length) {
+      sendChain = sendChain.then(async () => {
+        for (const image of pendingImages) {
+          try {
+            await sendMarkdownImage(key, image);
+            noteSendSuccess(key);
+          } catch (error) {
+            log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
+            lastSendFailed.set(key, true);
+          }
+        }
+      });
     }
     return sendChain.then(() => sent);
   }
@@ -9515,7 +9573,9 @@ async function main(options = {}) {
       appendActivity(`${kind}:${id} [guard] 发送被拦截（内容命中违规黑名单，未发出）`);
       throw new Error('发送内容命中违规关键词黑名单，已阻止发送');
     }
-    segments.push({ type: 'text', data: { text: escapeCqText(rawMessage) } });
+    // 群聊公开场合：统一发送端点（MCP 发送工具 / 旧发送工具都走这里）也要做本机路径脱敏。
+    const outgoing = kind === 'group' ? redactLocalPaths(rawMessage) : rawMessage;
+    segments.push({ type: 'text', data: { text: escapeCqText(outgoing) } });
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -13149,29 +13209,40 @@ async function main(options = {}) {
   async function sendGroupWithAt(key, qq, text) {
     const [kind, id] = key.split(':');
     if (kind !== 'group') return sendToQQ(key, text);
+    // 主动搭话里也可能带表情包（Markdown 图片行）：先拆出来，文字随 @ 发，图片补发。
+    const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(String(text ?? ''))));
+    // 群聊公开场合：正文再兜一层本机路径脱敏。
+    const bodyText = redactLocalPaths(split.text);
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    const body = {
-      group_id: Number(id),
-      message: [
-        { type: 'at', data: { qq: String(qq) } },
-        { type: 'text', data: { text: ` ${text}` } }
-      ]
-    };
-    const res = await fetch(`${httpUrl}/send_group_msg`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20000)
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok || payload.status !== 'ok' || payload.retcode !== 0) {
-      throw new Error(`发送失败: ${payload.wording || payload.retcode || res.status}`);
+    if (bodyText) {
+      const body = {
+        group_id: Number(id),
+        message: [
+          { type: 'at', data: { qq: String(qq) } },
+          { type: 'text', data: { text: ` ${bodyText}` } }
+        ]
+      };
+      const res = await fetch(`${httpUrl}/send_group_msg`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20000)
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload.status !== 'ok' || payload.retcode !== 0) {
+        throw new Error(`发送失败: ${payload.wording || payload.retcode || res.status}`);
+      }
     }
     lastSendFailed.delete(key);
-    return payload.data;
+    for (const image of split.images) {
+      try { await sendMarkdownImage(key, image); } catch (error) {
+        log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
+      }
+    }
+    return { ok: true };
   }
 
   async function checkProactiveAt() {
@@ -14288,6 +14359,11 @@ async function main(options = {}) {
     const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake });
     if (tokenWake) {
       logThrottled(`token-guard:${key}`, 10 * 60_000, `[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
+      // 额度/次数/花费这类「今天没戏了」的拦截要让人知道，否则被 @ 也永远没反应。
+      // gap 类（两次唤醒间隔太短）不提示，避免刷屏。
+      if (['day', 'cost', 'budget'].includes(String(tokenWake.reason))) {
+        notifyQuotaBlocked(key, reason, tokenWake);
+      }
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
         const cap = tokenWake.reason === 'day' ? 10 * 60_000 : 60_000;
         const waitMs = Math.min(cap, Math.max(1000, Math.round(tokenWake.retryAfterMs)));
@@ -14402,6 +14478,7 @@ async function main(options = {}) {
         rollbackWakeTime();
         restoreFiniteSleep();
         log(`[reserved2] 唤醒投递被拒 ${key}: ${result.error || '未知错误'}`);
+        notifyWakeFailure(key, reason, result.error || '投递被拒绝');
       } else if (result && result.queued === true) {
         // 入队而非真正在途：保留 pendingWakeKeys，等 DSH 恢复后真正投递的 turn/end 再触发收尾保护；
         // 不能在这里删除，否则补投的唤醒回合会丢失“未设置唤醒配置”的安全兜底。
@@ -14418,6 +14495,7 @@ async function main(options = {}) {
         setupSleepTimerV2(key);
       }
       log(`[reserved2] 唤醒投递失败 ${key}: ${error?.message ?? error}`);
+      notifyWakeFailure(key, reason, error);
     }
   }
 
@@ -15522,8 +15600,10 @@ async function main(options = {}) {
       : '';
     // 贴吧已由 dsh-tieba-dive 插件接管（自带工具与提示），这里不再塞入口。
     // 内置记忆召回：按当前这句话从记忆卡里挑几条相关的（不是整张卡），省 token 也更准。
+    // 群聊是公开场合：按 platform='bili' 过滤，绝不把桌宠/私聊记录召回进群（隐私）；
+    // 私聊给全量。与上面 memoryCardBlock 的平台口径一致。
     let recallBlock = '';
-    try { recallBlock = memoryRecall.promptBlock(textContent); } catch { recallBlock = ''; }
+    try { recallBlock = memoryRecall.promptBlock(textContent, { platform: kind === 'group' ? 'bili' : 'qq' }); } catch { recallBlock = ''; }
     const promptText = (recallBlock ? recallBlock + '\n\n' : '') + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint + mustReplyHint
       + (isOwner ? ownerMessageTag() : '')
       + peerAliasTagV2(key, isOwner)
@@ -15957,7 +16037,7 @@ async function main(options = {}) {
       catch (error) { log(`⚠️ 取消回合失败 ${key || sessionId}：${error?.message ?? error}`); }
       if (!key) return;
       try {
-        await sendToQQ(key, `【SurfCore】本轮已停止，避免继续消耗：${stop.reason}。修复后回复「继续」可开新回合；详情见设置 → 诊断。`);
+        await sendToQQ(key, `【SurfCore】本轮已停止，避免继续消耗：${stop.reason}。修复后回复「继续」可开新回合；详情见 设置 → dsh-Dfy → 维护 → 安装与维护 → 诊断与体检。`);
       } catch (error) {
         log(`⚠️ 回合止血通知发送失败 ${key}：${error?.message ?? error}`);
       }
@@ -16073,11 +16153,23 @@ async function main(options = {}) {
               continue;
             }
             // 追踪当前 turn 是否成功调用过 MCP 发送类工具：
-            if (!isCurrentSession(key, frame.sessionId)) continue;
+            // 「待退役」的会话也要继续处理：这一轮已经生成好的回复必须发出去，
+            // 不能在退役瞬间被丢掉（token 已花、QQ 却收不到）。
+            const retiringNow = retiringSessions.get(frame.sessionId) ?? null;
+            if (!isCurrentSession(key, frame.sessionId) && !retiringNow) continue;
+            if (frame.event.type === 'turn/end' && retiringNow) {
+              retiringSessions.delete(frame.sessionId);
+              reverse.delete(frame.sessionId);
+              api.events.forget?.(frame.sessionId);
+              // 延迟停用/归档：本轮回复的发送在同一次事件处理的后半段，先让它发完。
+              setTimeout(() => stopRetiredSessionWork(frame.sessionId, retiringNow.key), 4000);
+              log(`退役会话的在途回合已结束，稍后停用 ${retiringNow.key} -> ${frame.sessionId}`);
+            }
             // 只有“发送成功”才跳过自动转发；如果工具调用失败，仍允许 AI 的文本正常发出。
             if (frame.event.type === 'turn/start') {
               sendToolSucceededSessions.delete(frame.sessionId);
               pendingSendToolCalls.delete(frame.sessionId);
+              turnSendToolState.delete(frame.sessionId);
               v2TurnStartAt.set(frame.sessionId, Date.now());
               turnLeaseNoted.delete(frame.sessionId);
             }
@@ -16167,6 +16259,9 @@ async function main(options = {}) {
               turnLeaseNoted.delete(frame.sessionId);
               const sendToolSucceeded = sendToolSucceededSessions.has(frame.sessionId);
               sendToolSucceededSessions.delete(frame.sessionId);
+              // 记给后面的 reserved2 分支用：整轮没成功调用发送工具时决定要不要降级直发。
+              if (turnSendToolState.size > 200) turnSendToolState.clear();
+              turnSendToolState.set(frame.sessionId, { sent: sendToolSucceeded, at: Date.now() });
               pendingSendToolCalls.delete(frame.sessionId);
               toolCallNames.delete(frame.sessionId);
               // 目的机制：先把「这一枪到底发没发 / 她写了什么目的」记下来，再走正常收尾。
@@ -16353,8 +16448,23 @@ async function main(options = {}) {
                     }
                   }
                 } else if (currentMode === 'reserved2') {
-                  log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
-                  appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
+                  // 二代仿真模式：模型应通过 qq_send_message 发送，纯文本是内部输出、不自动转发。
+                  // 但如果整轮**一次发送工具都没成功调用**，而这是私聊里有人明确在叫她，
+                  // 就降级把文本直接发出去 —— 否则就是「她明明回了，QQ 却什么都没收到」。
+                  // 群聊不降级（避免把内部计划发进公开场合）；含内部标记的文本也不降级。
+                  const toolState = turnSendToolState.get(frame.sessionId);
+                  turnSendToolState.delete(frame.sessionId);
+                  const st2 = getSocialV2State(key);
+                  const directWake = String(key).startsWith('private:') || isHardDirectWakeReason(st2.lastWakeReason);
+                  const looksInternal = /【(目的|需求|计划|思考|内部|判断)/.test(plain);
+                  if (toolState && toolState.sent === false && directWake && !looksInternal && plain.trim().length <= 500) {
+                    log(`[reserved2] 本轮未调用发送工具，私聊降级直发 (${key})`);
+                    appendActivity(`${key} [reserved2] 未调用发送工具，已降级直发`);
+                    await sendToQQ(key, plain);
+                  } else {
+                    log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
+                    appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
+                  }
                 } else {
                   if (shouldBlockSilentReply(key)) {
                     log(`静默模式，拦截在途回复 (${key})`);
@@ -16541,16 +16651,33 @@ async function main(options = {}) {
     reconnect: true
   });
 
+  // 入口兜底通知：能走到这个顶层 catch 的，都是 handleIncoming 内部各环节都没接住的
+  // 意外错误（建会话/prompt/分发抛出）。此时用户一条回执都没收到，表现为「发了石沉大海」。
+  // 这里补一条降级提示（按会话限频，且自身绝不再抛），把「静默失败」变成「至少知道没收到」。
+  const entryFailNotifiedAt = new Map(); // key -> ts，10 分钟内不重复打扰
+  function notifyEntryFailure(key, error) {
+    try {
+      const now = Date.now();
+      if (now - (entryFailNotifiedAt.get(key) ?? 0) < 10 * 60_000) return;
+      entryFailNotifiedAt.set(key, now);
+      // 复用发送守卫：出错期间模式/白名单可能已变，不允许就别硬发。
+      const assertSendAllowed = captureSendGuard(key);
+      assertSendAllowed();
+      const msg = String(error?.message ?? error ?? '').slice(0, 120);
+      sendToQQ(key, `⚠️ 这条消息没处理成功：${msg || '未知错误'}。稍后再发一次，或去 设置 → dsh-Dfy → 维护 看诊断。`);
+    } catch { /* 兜底通知绝不能反过来打断消息循环 */ }
+  }
+
   bot.onPrivateMessage(async (event) => {
     // 统一按字符串比较：网关可能把 id 序列化成 number/string 混用，
     // 用 `===` 漏掉自己发的消息会进入正常处理（reserved2 下 AI 会回答自己 / chat 下可能回复循环）。
     if (String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-    try { await handleIncoming('private', event.user_id, event, cfg); } catch (error) { log('处理私聊消息出错:', error?.message ?? error); }
+    try { await handleIncoming('private', event.user_id, event, cfg); } catch (error) { log('处理私聊消息出错:', error?.message ?? error); notifyEntryFailure(convKey('private', event.user_id), error); }
   });
   bot.onGroupMessage(async (event) => {
     if (String(event?.sender?.user_id ?? '') === String(event?.self_id ?? '')
       || String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-    try { await handleIncoming('group', event.group_id, event, cfg); } catch (error) { log('处理群消息出错:', error?.message ?? error); }
+    try { await handleIncoming('group', event.group_id, event, cfg); } catch (error) { log('处理群消息出错:', error?.message ?? error); notifyEntryFailure(convKey('group', event.group_id), error); }
   });
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }

@@ -122,18 +122,29 @@ export function createBiliDynamicsSync({
         .filter((it) => !initial)
         .sort((a, b) => (a.pubTs || 0) - (b.pubTs || 0));
       let sent = 0;
+      let failed = 0;
       for (const item of fresh) {
         const message = formatDynamicMessage(item, { selfName });
+        sent = 0;
+        failed = 0;
         for (const gid of groups) {
           try {
-            await sendToQQ(`group:${gid}`, message);
-            sent += 1;
+            const ok = await sendToQQ(`group:${gid}`, message);
+            if (ok === false) failed += 1;
+            else sent += 1;
           } catch (error) {
+            failed += 1;
             log(`[B站动态] 发送失败 group:${gid}：${error?.message ?? error}`);
           }
         }
+        // 一个群都没发成功时不能标记已推送：否则这条动态永久丢失，
+        // 而且日志会误导成「已同步」。留到下轮重试。
+        if (!sent) {
+          log(`[B站动态] 新动态 ${item.id} 发送失败（${failed} 个群），未标记已读，下轮重试`);
+          continue;
+        }
         st.seen[item.id] = new Date().toISOString();
-        log(`[B站动态] 新动态 ${item.id} 已同步到 ${groups.length} 个群（${short(item.text || item.title, 30)}）`);
+        log(`[B站动态] 新动态 ${item.id} 已同步到 ${sent}/${groups.length} 个群（${short(item.text || item.title, 30)}）`);
       }
       // 只保留最近 300 条，避免状态文件无限长。
       const ids = Object.keys(st.seen);

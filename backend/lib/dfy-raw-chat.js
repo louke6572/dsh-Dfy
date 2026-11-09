@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { createTurnCollector, NodeApiClient, discoverDshLaunchToken } from '../../src/dsh-client.js';
 import { discoverDshBaseUrl, probeDshBaseUrl } from '../../src/dsh-port.js';
 import { effectiveQqConfigFile } from '../../src/config-locate.js';
@@ -21,15 +22,25 @@ import { readUnified } from './store.js';
 const REPLY_TIMEOUT_MS = 180_000;
 
 export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {}) {
-  const SESSION_ID = 'dfy-astrbot';
+  // 默认会话（无会话身份时的兜底，例如设置页自测）。有身份时按身份派生独立会话，
+  // 不再把所有 QQ 对话挤进同一个窗口。
+  const BASE_SESSION_ID = 'dfy-astrbot';
+
+  /** 会话身份 → DSH sessionId。空身份 = 默认会话。 */
+  function sessionIdFor(key) {
+    const raw = String(key ?? '').trim();
+    if (!raw) return BASE_SESSION_ID;
+    // 身份可能含 QQ 号/群号/平台 ID：只取哈希，避免把账号写进 sessionId（侧栏可见）。
+    return `${BASE_SESSION_ID}-${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 10)}`;
+  }
   /** DSH 插件服务：ctx.sessionController 不是属性，必须走 ctx.get(name)（2026-11 实测）。 */
   function service(name) {
     try {
       return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name];
     } catch { return undefined; }
   }
-  /** 最近一次成功写入的模型，避免每条消息都打一行日志。 */
-  let appliedModelKey = '';
+  /** 每个会话最近一次成功写入的模型（Map: sessionId → key），避免每条消息都打日志。 */
+  const appliedModelBySession = new Map();
   /** sessionController 的 Remote 方法签名是 (request, signal)，缺 signal 会 TypeError。 */
   const CONTROLLER_SIGNAL = new AbortController().signal;
   /** sessionId -> Set<{collector, resolve, reject, timer}> */
@@ -110,10 +121,11 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
   }
 
   /** 灌一条消息进会话，等这条 turn 的最终回复文本（同会话串行）。 */
-  function ask(text, { timeoutMs = REPLY_TIMEOUT_MS } = {}) {
-    const prev = locks.get(SESSION_ID) ?? Promise.resolve();
-    const run = prev.catch(() => {}).then(() => doAsk(text, timeoutMs));
-    locks.set(SESSION_ID, run);
+  function ask(text, { key = '', timeoutMs = REPLY_TIMEOUT_MS } = {}) {
+    const sessionId = sessionIdFor(key);
+    const prev = locks.get(sessionId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(() => doAsk(text, timeoutMs, sessionId));
+    locks.set(sessionId, run);
     return run;
   }
 
@@ -124,7 +136,7 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
    * 而用户主会话用的是 deepseek-account/deepseek-flash —— 于是 QQ 里那条鱼听起来
    * 「不像 DSH 里的她」。resolveModel() 由 index.js 注入（读 agentDefaultModel）。
    */
-  async function applySessionModel(controller) {
+  async function applySessionModel(controller, sessionId) {
     try {
       const preferred = (() => { try { return resolveModel?.() ?? null; } catch { return null; } })();
       const fallback = readUnified().config.model ?? {};
@@ -133,16 +145,16 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
       if (!provider || !model) return;
       const effort = String(preferred?.reasoningEffort ?? fallback.reasoningEffort ?? '');
       const key = `${provider}/${model}${effort ? `@${effort}` : ''}`;
-      if (key === appliedModelKey) return;
-      const payload = { sessionId: SESSION_ID, provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
+      if (appliedModelBySession.get(sessionId) === key) return;
+      const payload = { sessionId, provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
       if (controller && typeof controller.selectModel === 'function') {
         await controller.selectModel(payload);
       } else {
         const client = await api();
         await client.callUnary('session/selectModel', payload);
       }
-      appliedModelKey = key;
-      log(`[raw-chat] 会话模型 → ${key}（跟 DSH 默认模型）`);
+      appliedModelBySession.set(sessionId, key);
+      log(`[raw-chat] 会话模型 → ${key}（${sessionId}，跟 DSH 默认模型）`);
     } catch (error) {
       log('[raw-chat] 设模型失败：', String(error?.message ?? error).slice(0, 160));
     }
@@ -157,39 +169,41 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
    *   · controller.state 探盘上会话；没有才 create（带 qq-chat 预设 = 鱼的人设来源）；
    *   · 不依赖 inspect（Remote 没暴露它）。
    */
-  async function ensureSession() {
+  async function ensureSession(sessionId = BASE_SESSION_ID) {
     const controller = service('sessionController');
     if (controller && typeof controller.state === 'function' && typeof controller.create === 'function') {
       try {
-        await controller.state({ sessionId: SESSION_ID });
+        await controller.state({ sessionId });
       } catch {
-        const cwd = path.join(STATE_DIR, 'dfy-astrbot');
+        const cwd = sessionId === BASE_SESSION_ID
+          ? path.join(STATE_DIR, BASE_SESSION_ID)
+          : path.join(STATE_DIR, BASE_SESSION_ID, sessionId.slice(BASE_SESSION_ID.length + 1));
         try { fs.mkdirSync(cwd, { recursive: true }); } catch { /* 目录失败不影响会话 */ }
         try {
-          await controller.create({ sessionId: SESSION_ID, cwd, agentPreset: 'qq-chat' });
-          log(`[raw-chat] 会话 ${SESSION_ID} 已创建（preset qq-chat）`);
+          await controller.create({ sessionId, cwd, agentPreset: 'qq-chat' });
+          log(`[raw-chat] 会话 ${sessionId} 已创建（preset qq-chat）`);
         } catch (error) {
           // 已存在但 state 读不到：再探一次，仍然不行才报错。
-          try { await controller.state({ sessionId: SESSION_ID }); }
+          try { await controller.state({ sessionId }); }
           catch { log('[raw-chat] 建会话失败：', String(error?.message ?? error)); return false; }
         }
       }
-      await applySessionModel(controller);
+      await applySessionModel(controller, sessionId);
       return true;
     }
     // 兜底：老版本 DSH 没有 sessionController 时，只能靠 HTTP RPC 设模型。
-    await applySessionModel(null);
+    await applySessionModel(null, sessionId);
     return true;
   }
 
-  async function doAsk(text, timeoutMs) {
+  async function doAsk(text, timeoutMs, sessionId = BASE_SESSION_ID) {
     ensureSubscribed();
-    await ensureSession();
+    await ensureSession(sessionId);
     const content = String(text ?? '').trim();
     if (!content) throw new Error('消息为空');
     const collector = createTurnCollector();
     const w = {
-      sessionId: SESSION_ID,
+      sessionId,
       collector,
       resolve: () => {},
       reject: () => {},
@@ -199,8 +213,8 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
       w.resolve = resolve;
       w.reject = reject;
     });
-    if (!pending.has(SESSION_ID)) pending.set(SESSION_ID, new Set());
-    pending.get(SESSION_ID).add(w);
+    if (!pending.has(sessionId)) pending.set(sessionId, new Set());
+    pending.get(sessionId).add(w);
     w.timer = setTimeout(() => {
       settle(w, { ok: false, error: `等回复超时（${Math.round(timeoutMs / 1000)}s）：她可能在忙别的回合` });
     }, timeoutMs);
@@ -209,7 +223,7 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
       // api() 是 async：先 await 拿到客户端，再取 .sessions（漏 await 会报
       // "Cannot read properties of undefined (reading 'prompt')"）。
       const client = await api();
-      await client.sessions.prompt({ sessionId: SESSION_ID, mode: 'queue', content: [{ type: 'text', text: content }] });
+      await client.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: content }] });
     } catch (error) {
       const reason = String(error?.details?.reason ?? error?.message ?? error);
       settle(w, { ok: false, error: `灌消息失败：${reason.slice(0, 260)}` });
@@ -236,7 +250,7 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
     return '';
   }
 
-  return { ask, lastUserText, SESSION_ID };
+  return { ask, lastUserText, sessionIdFor, BASE_SESSION_ID };
 }
 
 /** 组 OpenAI 非流式响应。 */

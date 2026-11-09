@@ -982,7 +982,12 @@ async function handleMessage(event) {
     const messageId = messageIdOf(event);
     if (messageId && readReplied().includes(messageId)) return;
     const state = readState();
-    if (state.replies >= config.dailyReplyLimit) return;
+    // 额度满时以前直接 return，日志里看不出原因，用户只会觉得「自动回复突然失灵」。
+    // 这里补一行（限频）说明，方便排查。
+    if (state.replies >= config.dailyReplyLimit) {
+      log(`今日自动回复额度已满（${state.replies}/${config.dailyReplyLimit}），跳过 ${conversation.key}`);
+      return;
+    }
     enqueueReply({ event, conversation, text, allowed, messageId });
   } catch (error) {
     log(`消息处理失败：${String(error?.message ?? error).slice(0, 160)}`);
@@ -1024,7 +1029,9 @@ async function flushBatch({ conversation, batch }) {
   const crossDigest = needFullContext
     ? recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' })
     : '';
-  const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' ')); } catch { return ''; } })();
+  // 记忆召回：群聊是公开场合，按 platform='bili' 过滤，不把桌宠/私聊记录召回进群（隐私）；
+  // 私聊给全量。与上面 memoryCardBlock(isGroup?'bili':'qq') 同一口径。
+  const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' '), { platform: conversation.isGroup ? 'bili' : 'qq' }); } catch { return ''; } })();
   const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱）。表情：工具里有 sticker_search / sticker_send 时按需用。';
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   const personaCore = needFullContext ? douyinPersonaBlock() : '';
@@ -1092,6 +1099,11 @@ async function flushBatch({ conversation, batch }) {
     }
     runtime.error = String(error?.message ?? error).slice(0, 240);
     log(`回复 ${conversation.displayName} 失败：${runtime.error}`);
+    // 失败时不要让对方干等：回一句可操作的兜底（发送本身失败时这次也会失败，忽略即可）。
+    try {
+      const lastEvent = batch.at(-1)?.event;
+      if (lastEvent?.reply) await lastEvent.reply('（我这边刚才没接上，你再说一次？）');
+    } catch { /* 兜底提示发不出去也不影响主流程 */ }
     throw error;
   }
 }

@@ -59,6 +59,11 @@ jobs:
           node widget/tools/check-dead-settings.mjs
           node widget/tools/expr-smoke.mjs
 
+      # 出站安全不变式：所有发到 QQ 的文本必须收敛在收口函数里、群聊必须脱敏本机路径、
+      # Markdown 图片行必须被剥离成图片段。2026-11 表情包把 C:\Users\… 发进群的事故护栏。
+      - name: 出站安全审计
+        run: node widget/tools/outbound-safety-audit.mjs
+
       # 核心不变量审计（路由安全 / 接口对等 / 注入面 / CI）。--no-pack 避免在 CI 里跑 npm pack。
       - name: 核心不变量审计
         run: node widget/tools/ci-audit.mjs --no-pack

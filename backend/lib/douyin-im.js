@@ -15,6 +15,7 @@
  *   · 每日回复有上限，重复消息按服务端 messageId 去重。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { DOUYIN_DIR } from './douyin.js';
@@ -26,6 +27,44 @@ import { composePersonaLayers } from '../../src/persona-layers.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
 import { appendMemoryInboxEvent } from '../../src/memory-card.js';
 import { memoryCardPromptBlock } from './memory-card.js';
+import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
+
+// 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
+function nekoStickerConfig() {
+  try {
+    const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+    return data?.stickers && typeof data.stickers === 'object' ? data.stickers : {};
+  } catch { return {}; }
+}
+let nekoSingleton = null;
+function nekoInstance() {
+  const dir = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'nekowhale-cache');
+  nekoSingleton ||= createNekoStickers({ dir, log: (message) => log(`[neko] ${String(message).slice(0, 160)}`) });
+  return nekoSingleton;
+}
+
+async function maybeSendDouyinSticker(event, text) {
+  const cfg = nekoStickerConfig();
+  if (cfg.enabled === false) return;
+  try {
+    const neko = nekoInstance();
+    const sdk = await loadSdk();
+    const result = await neko.afterReply({
+      key: `douyin:${String(event?.threadId || event?.conversationShortId || '')}`,
+      text: String(text ?? ''),
+      config: cfg,
+      transport: async (item) => {
+        const file = await neko.download(item);
+        const bytes = fs.readFileSync(file);
+        return event.reply(sdk.segment.image(bytes));
+      },
+    });
+    if (result) log(`[neko] 抖音已补表情：${result?.name || ''}`);
+  } catch (error) {
+    log(`[neko] 抖音表情发送失败：${String(error?.message ?? error).slice(0, 160)}`);
+  }
+}
 
 const IM_DIR = path.join(DOUYIN_DIR, 'im');
 const DATA_DIR = path.join(IM_DIR, 'data');
@@ -982,6 +1021,9 @@ async function flushBatch({ conversation, batch }) {
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
     }
+    // 大肥鱼表情包：文字发完后补一张（私信/群聊都走同一个 event.reply 图片消息；不阻塞回复记账）
+    void maybeSendDouyinSticker(latest, text);
+
     const state = readState();
     state.replies += 1;
     saveState(state);

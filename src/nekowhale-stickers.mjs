@@ -190,7 +190,7 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
   }
 
   /** 回复后自动补一张（受配置的开关/间隔/排除情绪约束）。 */
-  async function afterReply({ key, text, httpUrl, token, config = {}, now = Date.now() }) {
+  async function afterReply({ key, text, httpUrl, token, config = {}, now = Date.now(), transport = null }) {
     const cfg = config ?? {};
     if (cfg.enabled !== true) return null;
     const minGap = Math.max(0, Number(cfg.minGapSec ?? 60)) * 1000;
@@ -201,7 +201,8 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
     if (sentAt.length >= maxPerHour) return null;
     const item = await pick(text, { excludeEmotions: Array.isArray(cfg.excludeEmotions) ? cfg.excludeEmotions : [], minScore: Number(cfg.minScore ?? 2) });
     if (!item) return null;
-    const result = await send({ httpUrl, token, key, item });
+    // transport：别的平台（抖音）自己发图；没给就走 SnowLuma（QQ）
+    const result = transport ? await transport(item) : await send({ httpUrl, token, key, item });
     state.sentAt = [...sentAt, now].slice(-50);
     saveState(state);
     return result;

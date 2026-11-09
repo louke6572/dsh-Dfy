@@ -1,5 +1,6 @@
 import { readFriendInteractionsEnabled, acquireFriendInteractionDispatch } from './friend-interactions-guard.mjs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { resolveRuntimePaths } from './runtime-paths.mjs';
 import { randomUUID, createHash } from 'node:crypto';
@@ -12,6 +13,16 @@ import { groupMessageAddressesFish, normalizeMentionNames } from './group-reply-
 import { isMetadataMessage, isReplyableMessage } from './chat-message.mjs';
 import { ChatOutputAssets } from './chat-output.mjs';
 import { GroupVideoInbox } from './group-video-inbox.mjs';
+import { createNekoStickers } from '../../../src/nekowhale-stickers.mjs';
+
+// 大肥鱼表情包：和 QQ 共用同一份开关（qq 配置的 stickers 段）
+function nekoStickerConfig() {
+  try {
+    const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+    return data?.stickers && typeof data.stickers === 'object' ? data.stickers : {};
+  } catch { return {}; }
+}
 
 const basePolicy = () => ({ version: 1, enabled: false, allowlist: [], dailyReplyLimit: null });
 const dayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -852,8 +863,51 @@ export class ChatService {
     }
     mark.status = 'ready'; mark.reason = ''; mark.context.push(imageDelivered ? { id: delivery.messageId, sender: 'outgoing', text: '', kind: 'image', media: { type: 'image', label: imageAsset.remark, understandingScope: 'confirmed-outgoing-public-sticker' } } : { id: delivery.messageId, sender: 'outgoing', text: reply.text }); mark.context = mark.context.slice(-12);
     mark.seen.push(delivery.messageId); delete mark.pending; this.persist();
-    this.log('reply.sent', { recipientId: contact.id, text: imageDelivered ? '' : reply.text, ...(imageDelivered?{mediaType:'image'}:{}), messageId: delivery.messageId, usage: reply.usage }); return delivery;
+    this.log('reply.sent', { recipientId: contact.id, text: imageDelivered ? '' : reply.text, ...(imageDelivered?{mediaType:'image'}:{}), messageId: delivery.messageId, usage: reply.usage });
+    if (!imageDelivered && !backlog) void this.maybeSendAutoSticker(contact, reply.text, signal).catch((error) => this.log('reply.sticker_error', { recipientId: contact.id, message: String(error?.message ?? error).slice(0, 200) }));
+    return delivery;
   }
+  /** 回复发出后补一张大肥鱼表情（抖音私信/群聊共用；受 qq 配置 stickers 控制）。 */
+  async maybeSendAutoSticker(contact, text, signal) {
+    const cfg = nekoStickerConfig();
+    if (cfg.enabled === false) return;
+    const dir = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'nekowhale-cache');
+    this.nekoStickers ||= createNekoStickers({ dir, log: (message) => this.log('neko', { message: String(message).slice(0, 160) }) });
+    const weak = ['manual', 'existing-conversation', 'existing-group'].includes(contact.authorizationKind);
+    const transport = async (item) => {
+      const file = path.join(dir, 'nekowhale', 'gif', item.file);
+      const bytes = fs.readFileSync(file);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const asset = { id: `sticker:${sha256}`, bytes, sha256, mimeType: 'image/gif', extension: 'gif', remark: item.name || '大肥鱼表情' };
+      const current = await this.browser.readConversation(contact.id, { allowed: true, signal, weak, backgroundOnly: true });
+      const messages = messagesOf(current);
+      const watermark = messageWatermark(messages, current);
+      const authorize = async ({ recipientId } = {}) => {
+        if (recipientId !== contact.id) throw new Error('贴图目标会话不一致');
+        signal.throwIfAborted();
+        const policy = validatePolicy(load(this.policyFile, this.policy));
+        if (!readFriendInteractionsEnabled(this.stateDir)) throw new Error('好友互动已关闭，未发表情');
+        if (!policy.enabled || !matchesAuthorizedContact(contact, policy.allowlist.find((entry) => entry.id === contact.id))) throw new Error('回复许可已变化，未发表情');
+        return true;
+      };
+      authorize.beginDispatch = () => acquireFriendInteractionDispatch(this.stateDir);
+      return this.browser.sendImageMessage(contact.id, asset, {
+        allowed: true,
+        signal,
+        expectedContact: contact,
+        expectedMessageIds: messages.map((message) => message.id),
+        expectedMessageContent: watermark.content,
+        expectedMessageEvidence: { chronology: watermark.chronology, latestEndVerified: watermark.latestEndVerified },
+        authorize,
+        weak,
+        backgroundOnly: true,
+      });
+    };
+    const result = await this.nekoStickers.afterReply({ key: `douyin:${contact.id}`, text: String(text ?? ''), config: cfg, transport });
+    if (result?.confirmed) this.log('reply.sticker_sent', { recipientId: contact.id, mediaType: 'image' });
+    else if (result) this.log('reply.sticker_unsent', { recipientId: contact.id, failureCode: result.failureCode || null });
+  }
+
   async poll() {
     if (!this.running) return;
     if(!readFriendInteractionsEnabled(this.stateDir)){const maintenance=maintenanceActive(this.stateDir);this.stop({preservePending:maintenance,reason:maintenance?'settings-update':'master-off'});return;}

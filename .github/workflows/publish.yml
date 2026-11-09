@@ -71,6 +71,7 @@ jobs:
           node widget/tools/config-fuzz-audit.mjs
           node widget/tools/token-guard-audit.mjs
           node widget/tools/persona-layers-audit.mjs
+          node widget/tools/module-import-audit.mjs
 
       - name: 出站安全审计
         run: node widget/tools/outbound-safety-audit.mjs

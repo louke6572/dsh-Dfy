@@ -66,6 +66,7 @@ jobs:
           node widget/tools/config-fuzz-audit.mjs
           node widget/tools/token-guard-audit.mjs
           node widget/tools/persona-layers-audit.mjs
+          node widget/tools/module-import-audit.mjs
 
       # 出站安全不变式：所有发到 QQ 的文本必须收敛在收口函数里、群聊必须脱敏本机路径、
       # Markdown 图片行必须被剥离成图片段。2026-11 表情包把 C:\Users\… 发进群的事故护栏。

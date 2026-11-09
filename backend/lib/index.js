@@ -128,7 +128,7 @@ import { createPersonaClassifier } from './persona-classify.js';
 import { personaSnapshot, setPersonaMood, setPersonaQuirks } from '../../src/persona-state.js';
 import { createLearningLoop } from './learning-loop.js';
 import { createMemoryOrganizer } from './memory-organize.js';
-import { syncPersonaSystemPreset } from './preset-sync.js';
+import { syncPersonaSystemPreset } from './preset-sync.mjs';
 import { rollbackAutoPersona } from '../../src/learning-profile.js';
 
 // 版本号对外只有一个来源：合并后的 dsh-Dfy 主包（plugins/surfcore-next/package.json）。

@@ -29,6 +29,7 @@ import { appendMemoryInboxEvent } from '../../src/memory-card.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
 import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
+import { redactLocalPaths } from '../../src/redact-paths.mjs';
 import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
 import { createMemoryRecall } from '../../src/memory-recall.mjs';
 
@@ -1110,7 +1111,8 @@ async function flushBatch({ conversation, batch }) {
 
 /** 抖音 IM 对长消息不友好：压成一段、去掉 Markdown、截到 200 字。 */
 function normalizeOutgoing(input) {
-  let text = humanizeReplyText(input);
+  // 抖音是公开场合：模型输出直发前先脱敏本机路径（与 QQ 出站收口同一层）。
+  let text = redactLocalPaths(humanizeReplyText(input));
   if (!text) return '';
   text = text
     .replace(/```[\s\S]*?```/g, ' ')

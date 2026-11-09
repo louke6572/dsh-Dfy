@@ -10,12 +10,15 @@
  * snowluma-conn 自发现（换号/换 token 不用改配置）。
  */
 import { discoverSnowLumaConnection } from '../../src/snowluma-conn.js';
+import { redactLocalPaths } from '../../src/redact-paths.mjs';
 import { readQqConfig } from './store.js';
 
 /** @returns {Promise<{ok:boolean, error?:string, data?:any}>} */
 export async function sendQqPrivate({ uin, text } = {}) {
   const target = String(uin ?? '').trim();
-  const message = String(text ?? '').trim();
+  // 与桥接收口同一层脱敏：这是模型输出直发 QQ 的旁路（路线 B 兜底），
+  // 不过收口就会重现「本机路径发进聊天」的泄漏类事故。
+  const message = redactLocalPaths(String(text ?? '').trim());
   if (!/^\d{5,15}$/.test(target)) return { ok: false, error: '主人 QQ 号无效（先在人格/身份里配置主人）' };
   if (!message) return { ok: false, error: '消息为空' };
   const cfg = (() => {

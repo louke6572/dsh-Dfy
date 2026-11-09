@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import { createTurnCollector, NodeApiClient, discoverDshLaunchToken } from '../../src/dsh-client.js';
 import { discoverDshBaseUrl, probeDshBaseUrl } from '../../src/dsh-port.js';
 import { effectiveQqConfigFile } from '../../src/config-locate.js';
+import { redactLocalPaths } from '../../src/redact-paths.mjs';
 import { STATE_DIR } from './paths.js';
 import { readUnified } from './store.js';
 
@@ -240,7 +241,8 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
       settle(w, { ok: false, error: `灌消息失败：${reason.slice(0, 260)}` });
     }
     const reply = await promise;
-    return reply;
+    // 这条回复会经 AstrBot 发往 QQ（公开场合）：与桥接收口同一层脱敏本机路径。
+    return redactLocalPaths(reply);
   }
 
   /** OpenAI 兼容解析：取最后一条用户消息的纯文本。 */

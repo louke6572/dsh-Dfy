@@ -98,6 +98,18 @@ for (const fn of IMAGE_STRIP_REQUIRED) {
 
 // ── 4) 不允许把本地路径拼进 Markdown 图片 ─────────────────────────────
 const SOURCE_DIRS = ['src', 'backend', 'packages/dsh-dfy-core'].map((d) => path.join(ROOT, d));
+// 桥接之外的三个「模型输出直发外部聊天」旁路也必须脱敏（2026-11-09 补查实装）：
+//   qq-direct（路线 B 兜底直发 QQ）、douyin-im（抖音回复）、dfy-raw-chat（回复经 AstrBot 发 QQ）
+const BYPASS_FILES = [
+  { file: path.join(ROOT, 'backend', 'lib', 'qq-direct.js'), label: 'qq-direct（直发 QQ）' },
+  { file: path.join(ROOT, 'backend', 'lib', 'douyin-im.js'), label: 'douyin-im（抖音回复）' },
+  { file: path.join(ROOT, 'backend', 'lib', 'dfy-raw-chat.js'), label: 'dfy-raw-chat（经 AstrBot 发 QQ）' },
+];
+for (const { file, label } of BYPASS_FILES) {
+  const text = read(file);
+  if (!text.includes('redactLocalPaths(')) fail(`[旁路脱敏缺失] ${label} 没有调用 redactLocalPaths()：模型输出直发外部聊天，可能带本机路径`);
+  else ok(`${label} 已做本机路径脱敏`);
+}
 function walk(dir, out = []) {
   let entries = [];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }

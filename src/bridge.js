@@ -6798,7 +6798,11 @@ async function main(options = {}) {
             saveSocialV2State();
             log(`[reserved2] 工具分条发送 ${key}: 成功 ${sentMessages.length}/${messages.length} 条`);
             appendActivity(`${key} [reserved2] 工具分条发送：成功 ${sentMessages.length}/${messages.length} 条`);
+      // 大肥鱼表情包：分条发送成功后再补一张
+      if (sentMessages.length > 0) void sendNekoAfterReply(key, messages.join(' '));
             if (sentMessages.length > 0) scheduleReplyCheckV2(key);
+            // 大肥鱼表情包：工具发送（reserved2 模式的主路径）成功后再补一张
+            if (sentMessages.length > 0) void sendNekoAfterReply(key, messages.join(' '));
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
             const splitWarn = findSplitBoundaryWarning(messages);

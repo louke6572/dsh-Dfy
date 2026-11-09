@@ -3713,6 +3713,7 @@ async function main(options = {}) {
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
+    contextPrimed.delete(key);
     if (!sessionId) return;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
@@ -9201,6 +9202,8 @@ async function main(options = {}) {
   const turnIncomingSeqByKey = new Map();
   const lastUserText = new Map();
   const lastSenderLabel = new Map();
+  // 每个会话的人设/记忆只注入一次（会话里已有历史），避免每轮重复塞几千字导致上下文爆炸
+  const contextPrimed = new Map(); // key -> 注入时间
   let humanizeGateInstance = null;
   function humanizeGate() {
     humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(STATE_DIR, '..', 'token-usage-daily.json'), log });
@@ -15399,11 +15402,18 @@ async function main(options = {}) {
       }
     }
 
+    // 省 token：人设 / 记忆卡 / 跨平台近况只有本会话第一次（或 6 小时后）才注入；
+    // 这些内容已经在会话历史里，每轮重复注入会让输入越滚越大、token 烧得很快。
+    const primedAt = Number(contextPrimed.get(key) ?? 0);
+    const needFullContext = !primedAt || Date.now() - primedAt > 6 * 3600_000;
+    if (needFullContext) contextPrimed.set(key, Date.now());
+
     // 角色扮演提示注入（仅注入给 agent，不影响群友之间的正常对话语义）
-    const roleHint = currentRoleHint(key);
+    const roleHint = needFullContext ? currentRoleHint(key) : '';
 
     // 最近聊天上下文：先取「当前消息之前」的窗口，再把当前消息记进窗口。
-    const recentBlock = currentMode === 'chat' ? buildRecentChatBlock(key) : '';
+    // 只在完整注入时带；平时会话历史里已经有这些消息，再塞一份就是重复计费。
+    const recentBlock = currentMode === 'chat' && needFullContext ? buildRecentChatBlock(key) : '';
     recordRecentChat(
       key,
       `${event.sender?.card || event.sender?.nickname || String(event.user_id)}(${String(event.user_id)})`,
@@ -15660,7 +15670,7 @@ async function main(options = {}) {
       return;
     }
     if (cfg.ackMessage && currentMode !== 'reserved2') await sendToQQ(key, cfg.ackMessage);
-    log(`已投递 ${key}: ${promptText.slice(0, 80)}${promptText.length > 80 ? '…' : ''}`);
+    log(`已投递 ${key}: ${promptText.length} 字${needFullContext ? '（含人设/记忆）' : '（仅新消息）'} · ${promptText.slice(0, 60)}${promptText.length > 60 ? '…' : ''}`);
   }
 
   // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）

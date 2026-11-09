@@ -339,3 +339,8 @@ a.qbw-vtitle:hover{color:var(--qbw-accent)}
 .qbw-app .qbw-page-douyin .qbw-input,
 .qbw-app .qbw-page-douyin .qbw-select{height:34px;flex:1 1 220px;font-size:13px}
 .qbw-app .qbw-page-douyin .qbw-switch{width:17px;height:17px}
+
+.qbw-doc-list .qbw-rec{padding:8px 10px;margin:0 0 6px}
+.qbw-doc-list .qbw-rec-title{font-size:13px;line-height:18px}
+.qbw-doc-list .qbw-rec-text{font-size:12px;line-height:17px;margin-top:2px}
+.qbw-doc-list .qbw-hint{font-size:11px;line-height:16px;margin-top:1px}

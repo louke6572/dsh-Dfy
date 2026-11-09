@@ -489,6 +489,8 @@ async function loadSdk() {
 // 「一个会用模型的客服」——没有身份、没有性格、也没有共同经历。
 // 这里按 mtime 缓存，人格卡一改下次回复就生效。
 let personaCache = { key: '', text: '' };
+// 人设/记忆/跨平台近况只在每个抖音会话第一次（或 6 小时后）注入，避免每轮重复塞几千字。
+const contextPrimed = new Map();
 
 function ownerDisplayName() {
   try { return String(readUnified()?.config?.admin?.displayName || '').trim() || '主人'; } catch { return '主人'; }
@@ -979,16 +981,23 @@ async function flushBatch({ conversation, batch }) {
   const lines = batch
     .map((item) => `${senderNameOf(item.event)}：${item.text}`)
     .join('\n');
+  // 省 token：人设 / 记忆 / 跨平台近况只在本会话第一次（或 6 小时后）注入。
+  // 抖音会话历史里已经有这些内容，每轮重复注入会让输入越滚越大。
+  const primedAt = Number(contextPrimed.get(conversation.key) ?? 0);
+  const needFullContext = !primedAt || Date.now() - primedAt > 6 * 3600_000;
+  if (needFullContext) contextPrimed.set(conversation.key, Date.now());
   // 情绪 / 口头禅 + 她自己看到的：和 QQ、桌宠同一份状态，别在抖音里变成另一个人。
-  const personaBits = [personaPromptBlock(), learningPromptBlock()].filter(Boolean);
+  const personaBits = needFullContext ? [personaPromptBlock(), learningPromptBlock()].filter(Boolean) : [];
   // 记忆卡：和 QQ / B站 / 贴吧 / 桌宠同一张卡。私聊给她全量（含 QQ 私事），
   // 群聊只给「身份记忆 + 公开内容」那一版——群里有外人，不能把私聊细节带出去。
-  const memoryBlock = memoryCardBlock(conversation.isGroup ? 'bili' : 'qq');
+  const memoryBlock = needFullContext ? memoryCardBlock(conversation.isGroup ? 'bili' : 'qq') : '';
   // 跨平台近况：QQ/桌宠最近发生的事（公开信息；私聊细节不进公开场合）
-  const crossDigest = recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' });
-  const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱；重要的人和事要记，问到过去先搜）。表情：工具里有 sticker_search / sticker_send 时，需要发表情先 search 再 send，把那行 Markdown 图片放进回复。';
+  const crossDigest = needFullContext
+    ? recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' })
+    : '';
+  const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱）。表情：工具里有 sticker_search / sticker_send 时按需用。';
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
-  const personaCore = douyinPersonaBlock();
+  const personaCore = needFullContext ? douyinPersonaBlock() : '';
   const prompt = [
     `【抖音会话】${conversation.displayName || '未知会话'}${conversation.isGroup ? '（群聊）' : '（私聊）'}`,
     personaCore,

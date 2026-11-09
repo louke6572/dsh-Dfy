@@ -23,6 +23,11 @@
   · 「立即整理」「写昨日日记」放在同一张卡里。
 - inbox 计数改成「上次整理后新增」，比单纯总数更有意义。
 
+### 去掉重复的记忆实现（只留 dsh-evolve）
+- 之前同时存在：自建记忆卡 + 官方 MCP memory + dsh-evolve，三套记忆互相重复。
+- 已移除 mcp-memory（profile 行、setup 托管、依赖与垫片文件）：记忆统一由 dsh-evolve 承担；
+  自建记忆卡降级为「档案 + 日记」，不再作为日常记忆注入来源。
+
 ### 接入成熟的自进化记忆插件 dsh-evolve（替代手搓记忆）
 - 选型对比后安装 `dsh-evolve`（GitHub: chenzheshushi-commits/dsh-evolve）：
   · 结构化记忆：fact / preference / decision / lesson / todo / note，带 scope 与重要性；

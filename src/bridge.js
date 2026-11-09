@@ -13167,21 +13167,29 @@ async function main(options = {}) {
         }
       }
     } catch { /* 旧角色系统不可用就当没有 */ }
-    // 主人私聊给全量记忆（B站记忆 + 全量记忆卡）；其他人/群给「身份记忆版」。
-    // 四个平台是同一个她：群友问「你是谁 / 我们怎么认识的」时不能答「不认识」；
-    // 但主人的私聊细节、B站经历仍然只对主人开放。
+    // 主人私聊给精简版记忆（身份头 + 锚点提要）：B站**经历细节**不再常驻注入，
+    // 聊到相关话题时 biliMemory.recallBlock 会按需召回具体内容。
     const isOwnerConv = Boolean(cfg.ownerQQ) && key === `private:${String(cfg.ownerQQ)}`;
+    const biliIdentityHead = (text) => {
+      const t = String(text ?? '').trim();
+      const i = t.indexOf('最近在 B 站');
+      return (i > 0 ? t.slice(0, i) : t).trimEnd();
+    };
     const biliBrief = isOwnerConv && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
-      ? slimBrief(biliMemory.briefBlock(), 700)
+      ? slimBrief(biliIdentityHead(biliMemory.briefBlock()), 400)
       : '';
     // 管理员规则：随人格层一起注入（admin 身份可在设置里改，属易变配置）。
     const adminBlock = adminPromptLine(false);
-    // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
-    const memoryBlock = memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili);
-    // 跨平台近况：直接读统一 inbox 的最近事件，保证 QQ 知道抖音/桌宠刚发生了什么
+    // 记忆卡：首注只带精简版（前 1200 字，按行截断）；**具体细节按需想起**——
+    // 每条消息的 memoryRecall 会按当前话题召回相关条目，常驻全文就是浪费。
+    const memoryBlock = slimBrief(
+      memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili),
+      1200,
+    ).replace('……（其余略；聊到相关话题我会想起细节）', '……（其余记忆按需想起）');
+    // 跨平台近况：只保留最近几条（主人 6 条/其他人 5 条），细节按需。
     const crossDigest = cfg.humanize?.crossPlatformDigest === false ? '' : recentCrossPlatformDigest({
       inboxFile: activeMemoryPaths().inbox,
-      limit: isOwnerConv ? 14 : 10,
+      limit: isOwnerConv ? 6 : 5,
       includePrivate: isOwnerConv,
       excludePlatform: isOwnerConv ? '' : 'QQ',
     });
@@ -13213,7 +13221,7 @@ async function main(options = {}) {
   function buildRecentChatBlock(key) {
     const gid = key.startsWith('group:') ? key.slice(6) : '';
     const override = gid ? cfg.chat?.groupContextMessages?.[gid] : undefined;
-    const limit = Math.min(100, Math.max(0, Math.round(Number(override ?? cfg.chat?.contextMessages ?? 10))));
+    const limit = Math.min(100, Math.max(0, Math.round(Number(override ?? cfg.chat?.contextMessages ?? 6))));
     if (!limit) return '';
     const arr = recentChat.get(key) ?? [];
     const tail = arr.slice(-limit);
@@ -14314,12 +14322,17 @@ async function main(options = {}) {
     // 后续唤醒不再带它 —— 那时它已经在这条 DSH 会话的上下文里了。
     const initialPromptText = reason === 'bootstrap' ? formatInitialPromptV2(key) : '';
     const initialPromptLine = initialPromptText ? `${initialPromptText}\n\n` : '';
-    // 二代模式不自动注入完整角色卡（让 AI 调 qq_get_prompt），但 B 站记忆必须每轮都在：
-    // 否则群友问起「B站那个号」时，它会把自己当成另一个人。
+    // 二代模式不自动注入完整角色卡（让 AI 调 qq_get_prompt），但 B 站身份头必须每轮都在：
+    // 否则群友问起「B站那个号」时，它会把自己当成另一个人。经历细节按需召回（biliRecall）。
     // 同一理由反过来：只有主人的私聊才带长期记忆，非主人会话不注入记忆卡/B站记忆。
     const isOwnerConv = Boolean(cfg.ownerQQ) && key === `private:${String(cfg.ownerQQ)}`;
+    const biliIdentityHead = (text) => {
+      const t = String(text ?? '').trim();
+      const i = t.indexOf('最近在 B 站');
+      return (i > 0 ? t.slice(0, i) : t).trimEnd();
+    };
     const biliBrief = isOwnerConv && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
-      ? slimBrief(biliMemory.briefBlock(), 700)
+      ? slimBrief(biliIdentityHead(biliMemory.briefBlock()), 400)
       : '';
     const biliRecall = isOwnerConv && lastMsg && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))

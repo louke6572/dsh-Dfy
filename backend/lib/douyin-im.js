@@ -968,12 +968,13 @@ async function handleMessage(event) {
     const config = douyinImConfig();
     if (!config.enabled) return;
     const conversation = conversationOf(event);
-    if (!conversation) return;
-    if (conversation.stranger) return; // 陌生人私信一律不回
+    if (!conversation) { log(`收到消息但认不出会话：type=${String(event?.type ?? '')}`); return; }
+    log(`收到消息：${conversation.key}（${conversation.isGroup ? '群' : '私聊'}）${String(textOf(event)).slice(0, 40)}`);
+    if (conversation.stranger) { log(`忽略陌生人私信 ${conversation.key}`); return; }
     const allowed = config.allowlist.find((item) => item.id === conversation.key);
-    if (!allowed) return;
+    if (!allowed) { log(`忽略未授权会话 ${conversation.key}（允许名单 ${config.allowlist.length} 个）`); return; }
     const mentionNames = config.mentionNames;
-    if (conversation.isGroup && config.groupMentionOnly !== false && !addressesUs(event, mentionNames)) return;
+    if (conversation.isGroup && config.groupMentionOnly !== false && !addressesUs(event, mentionNames)) { log(`群消息未点名，忽略 ${conversation.key}`); return; }
     const text = textOf(event);
     if (!text) return;
     // 有人在跟她说话（不一定是主人）：计入「有社交接触」，让沉默推导更准。

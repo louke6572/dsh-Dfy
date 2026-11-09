@@ -15469,6 +15469,9 @@ async function main(options = {}) {
     // 判定为「在跟别人说话」时，默认不插话，仅按概率附和；附和时提示它可以只输出 [SILENT]。
     // 关闭方式：config.json → chat.addressFilter.enabled = false
     let chimeInHint = '';
+    // 私聊 / 直接对我们说的消息：明确要求必须回复，避免模型自己输出 [SILENT] 导致 QQ 上没反应
+    const directToUs = kind === 'private' || quoteTargetIsSelf || isOwner || isDirectAddress(textContent, event, kind);
+    const mustReplyHint = directToUs ? '\n\n【这条是直接对你说的，必须正常回复，不要输出 [SILENT]，也不要只回“嗯/收到/好”就结束。】' : '';
     if (currentMode === 'chat' && kind === 'group' && !isOwner && cfg.chat?.addressFilter?.enabled !== false) {
       const segs = Array.isArray(event?.message) ? event.message : [];
       const selfId = String(event?.self_id ?? '');
@@ -15519,7 +15522,7 @@ async function main(options = {}) {
     // 内置记忆召回：按当前这句话从记忆卡里挑几条相关的（不是整张卡），省 token 也更准。
     let recallBlock = '';
     try { recallBlock = memoryRecall.promptBlock(textContent); } catch { recallBlock = ''; }
-    const promptText = (recallBlock ? recallBlock + '\n\n' : '') + recentBlock + + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
+    const promptText = (recallBlock ? recallBlock + '\n\n' : '') + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint + mustReplyHint
       + (isOwner ? ownerMessageTag() : '')
       + peerAliasTagV2(key, isOwner)
       + senderLabel + '：' + textContent

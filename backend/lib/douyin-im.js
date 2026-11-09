@@ -48,7 +48,7 @@ function nekoInstance() {
 
 async function maybeSendDouyinSticker(event, text) {
   const cfg = nekoStickerConfig();
-  if (cfg.enabled === false) return;
+  if (cfg.enabled !== true) return;   // 默认关：改用成熟表情插件
   try {
     const neko = nekoInstance();
     const sdk = await loadSdk();
@@ -985,6 +985,7 @@ async function flushBatch({ conversation, batch }) {
   const memoryBlock = memoryCardBlock(conversation.isGroup ? 'bili' : 'qq');
   // 跨平台近况：QQ/桌宠最近发生的事（公开信息；私聊细节不进公开场合）
   const crossDigest = recentCrossPlatformDigest({ inboxFile: activeMemoryPaths().inbox, limit: 10, includePrivate: false, excludePlatform: 'QQ' });
+  const mcpToolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes（与 QQ 共用同一份知识图谱；重要的人和事要记，问到过去先搜）。表情：工具里有 sticker_search / sticker_send 时，需要发表情先 search 再 send，把那行 Markdown 图片放进回复。';
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   const personaCore = douyinPersonaBlock();
   const prompt = [
@@ -992,6 +993,7 @@ async function flushBatch({ conversation, batch }) {
     personaCore,
     memoryBlock,
     crossDigest,
+    mcpToolHint,
     ...personaBits,
     '下面是刚收到的新消息。只输出要发出去的回复：',
     '- 你就是上面的角色本人，不是客服或助理：保持她的身份、性格和说话方式，不要提 AI / 模型 / 提示词；',

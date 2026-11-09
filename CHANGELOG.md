@@ -23,6 +23,19 @@
   · 「立即整理」「写昨日日记」放在同一张卡里。
 - inbox 计数改成「上次整理后新增」，比单纯总数更有意义。
 
+### 改用成熟组件（MCP / DSH 插件），不再手搓
+- **表情包**：安装成熟的 DSH 插件 `dsh-nekowhale-stickers`（大肥鱼 322 张 + 贴字模板，官方式 DSH 插件，
+  提供 sticker_search / sticker_send / meme_render 工具与本地图片服务）。桥接负责把插件返回的
+  Markdown 图片行转成 QQ 图片段发出去；旧的原生实现默认关闭。
+- **长期记忆**：接入官方 MCP 记忆服务 `@modelcontextprotocol/server-memory`（知识图谱，
+  实体/关系/观察，文件锁安全）。已在 profile 注册 `mcp-memory`，所有 DSH 会话可用
+  `mcp__memory__*` 工具；数据固定在 `~/.dsh/surfcore/memory/mcp-memory.jsonl`，QQ / 抖音 / 桌宠共用。
+  提示词里加了工具说明（重要的事记下来、问到过去先检索）。删掉了之前手搓的 memory MCP 客户端。
+- **活人感**：对比了 `dsh-heartbeat`（主动心跳/自己过日子）——它不是逐条回复的拟人化，和 AstrBot
+  `fatfish_alive` 不是一类；这块暂时保留现有实现，等找到对位的成熟组件再换。
+- ⚠️ 以上 profile 变更（插件 bundle / MCP server）**重启 DSH 后生效**。
+- 旧记忆卡与跨平台近况保留：作为可编辑档案与短期上下文，长期沉淀交给 MCP memory。
+
 ### 跨平台同步（内置版）
 - **QQ / 抖音 / 桌宠共用一个「跨平台近况」**：直接读统一记忆 inbox 的最近事件，注入到每个平台的人设提示里（公开平台只带公开事件，QQ 私聊细节不外泄；管理员本人 QQ 私聊给全量）。
 - **人设统一**：QQ 内置桥与抖音都读同一份 `characters/<当前角色>/persona.md` 及其分层（场景/日常/语气）；抖音原先只注入到 2600 字，现与 QQ 一样放宽到 6000 字。

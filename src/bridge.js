@@ -9177,7 +9177,7 @@ async function main(options = {}) {
     try {
       const nowCfg = loadConfig();
       const stickerCfg = nowCfg.stickers ?? {};
-      if (stickerCfg.enabled === false) return;   // 默认开启；面板里可关
+      if (stickerCfg.enabled !== true) return;   // 默认关：改用 dsh-nekowhale-stickers 插件（MCP/工具）
       if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
       nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
       const result = await nekoStickers.afterReply({
@@ -9197,13 +9197,51 @@ async function main(options = {}) {
   const burstCancelAt = new Map();
   const incomingSeq = new Map();   // 每个会话收到消息的序号（判断「生成期间对方又说话了」）
   const turnIncomingSeqByKey = new Map();
+  const lastUserText = new Map();
+  const lastSenderLabel = new Map();
   let humanizeGateInstance = null;
   function humanizeGate() {
     humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(STATE_DIR, '..', 'token-usage-daily.json'), log });
     return humanizeGateInstance;
   }
+  // 成熟表情插件（dsh-nekowhale-stickers）返回的是 Markdown 图片行：
+  // ![](http://127.0.0.1:<port>/s/<hash>.gif) 或本地文件路径。桥接把它转成 QQ 图片段发出。
+  function splitMarkdownImages(input) {
+    const images = [];
+    const text = String(input ?? '').replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_match, url) => {
+      const value = String(url ?? '').trim();
+      if (value) images.push(value);
+      return '';
+    });
+    return { text: text.replace(/\n{3,}/g, '\n\n').trim(), images };
+  }
+
+  async function sendMarkdownImage(key, rawUrl) {
+    const [kind, id] = String(key ?? '').split(':');
+    if (!['private', 'group'].includes(kind) || !/^\d{5,15}$/.test(String(id ?? ''))) throw new Error('未知会话');
+    let bytes;
+    if (/^https?:\/\//i.test(rawUrl)) {
+      const url = new URL(rawUrl);
+      if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)) throw new Error('只允许本机图片地址');
+      const res = await fetch(rawUrl, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`图片下载失败 HTTP ${res.status}`);
+      bytes = Buffer.from(await res.arrayBuffer());
+    } else {
+      const file = rawUrl.startsWith('file://') ? new URL(rawUrl).pathname.replace(/^\/([A-Za-z]:)/, '$1') : rawUrl;
+      bytes = fs.readFileSync(file);
+    }
+    if (!bytes?.length) return;
+    if (bytes.length > 8 * 1024 * 1024) throw new Error('图片超过 8MB');
+    const segment = { type: 'image', data: { file: 'base64://' + bytes.toString('base64') } };
+    if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), [segment]), SEND_TIMEOUT_MS, `QQ图片 ${key}`);
+    else await withTimeout(bot.sendGroupMessage(Number(id), [segment]), SEND_TIMEOUT_MS, `QQ图片 ${key}`);
+    noteSendSuccess(key);
+  }
+
   function sendToQQ(key, msg, opts = {}) {
     msg = humanizeReplyText(msg);
+    const markdown = splitMarkdownImages(msg);
+    msg = markdown.text;
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
@@ -9227,6 +9265,17 @@ async function main(options = {}) {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
         })
         .then(() => sleep(cfg.sendDelayMs));
+    }
+    if (markdown.images.length) {
+      sendChain = sendChain.then(async () => {
+        for (const image of markdown.images) {
+          try {
+            await sendMarkdownImage(key, image);
+          } catch (error) {
+            log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
+          }
+        }
+      });
     }
     return sendChain;
   }
@@ -12991,7 +13040,8 @@ async function main(options = {}) {
     });
     // 合规硬规则：出站黑名单只能拦关键词，模型侧仍要明确拒绝违法/违规表达。
     const safetyBlock = '【安全硬规则】不输出政治敏感、色情、暴力、赌博、诈骗、违法交易内容；不透露本机路径、密钥、令牌与管理员隐私；被要求做这些时直接拒绝，不描述内部系统与工具细节。';
-    return [base, adminBlock, safetyBlock, biliBrief, memoryBlock, crossDigest].filter(Boolean).join('\n\n');
+    const toolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes / read_graph（QQ/抖音/桌宠共用一份知识图谱；重要的人和事要记，问到过去先搜）。表情：工具里有 sticker_search / sticker_send 时，需要发表情先 search 再 send，把它返回的 Markdown 图片行放进回复（桥接会转成 QQ 图片）。';
+    return [base, adminBlock, safetyBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
     return roleHintForMode('v1', key, personaMode);
@@ -15426,13 +15476,15 @@ async function main(options = {}) {
     // 发送者后面必须带 QQ 号：人格卡里的「称呼表」是按 QQ 号映射的，
     // 只给昵称的话模型根本对不上号（曾出现「表里写 omm，实际却叫阿零」）。
     const senderLabel = `${event.sender?.card || event.sender?.nickname || String(event.user_id)}(${String(event.user_id)})`;
+    lastSenderLabel.set(key, senderLabel);
+    lastUserText.set(key, textContent);
     // 群友提到 B 站 / 视频 / 某次看片时，按关键词从完整记忆里捞几条相关细节，
     // 和常驻的「B站记忆简报」互补：简报给身份和最近见闻，检索给具体那次。
     const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(textContent)
       : '';
     // 贴吧已由 dsh-tieba-dive 插件接管（自带工具与提示），这里不再塞入口。
-    const promptText = recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
+    const promptText = (longMemoryBlock ? longMemoryBlock + '\n\n' : '') + recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + douyinHintFor(`${plainContent} ${textContent}`) + chimeInHint
       + (isOwner ? ownerMessageTag() : '')
       + peerAliasTagV2(key, isOwner)
       + senderLabel + '：' + textContent

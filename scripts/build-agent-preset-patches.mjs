@@ -56,6 +56,26 @@ function sourceDirFor(name) {
   return path.join(REPO_ROOT, 'dsh', 'agent-presets', name);
 }
 
+/**
+ * 人格 system prompt 快照（可选）：dsh/agent-presets/persona.system.md
+ *
+ * 存在时，构建会把它的内容追加进每个 preset 的 persona 前缀（安全规则之后）——
+ * 人格稳定部分因此住进 Agent 预设的 system prompt：不进对话记录、每轮由 DSH
+ * 自己读取、稳定前缀可被模型缓存、压缩也压不掉。对话输入里就只剩记忆卡/
+ * 简报/近况这些易变内容。
+ *
+ * 该文件由插件在「保存人格 / 切换角色 / 插件启动自检」时自动生成
+ * （backend/lib/preset-sync.mjs），属于运行期数据，不入库（.gitignore）。
+ * 文件不存在时（CI / 全新 clone）按基础版构建，产物确定性不变。
+ */
+export const PERSONA_SNAPSHOT_FILE = path.join(REPO_ROOT, 'dsh', 'agent-presets', 'persona.system.md');
+
+function personaSnapshotBlock() {
+  let text = '';
+  try { text = fs.readFileSync(PERSONA_SNAPSHOT_FILE, 'utf8').trim(); } catch { return ''; }
+  return text;
+}
+
 function readYaml(file) {
   let text;
   try {
@@ -119,6 +139,19 @@ export function renderPatch(name) {
     if (meta[field] === undefined) throw new Error(`${name}: preset.yml 缺少 ${field}`);
   }
   const plugins = normalizeRows(readYaml(path.join(dir, 'agent.cordis.yml')), name);
+  // 人格 system prompt 注入：persona 行的 prefix 末尾追加快照（安全规则在前、人格在后，
+  // 既有优先级语义不变）。快照由插件运行期生成（persona.system.md），不存在则按基础版构建。
+  const personaBlock = personaSnapshotBlock();
+  if (personaBlock) {
+    for (const row of plugins) {
+      if (row.id !== 'persona') continue;
+      const cfgRow = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? row.config : null;
+      if (!cfgRow) continue;
+      const prefix = String(cfgRow.prefix ?? '');
+      if (prefix.includes('【人格 · ')) continue; // 已注入（幂等：源文件被快照覆盖前不会发生，防手滑双写）
+      cfgRow.prefix = `${prefix}\n\n【人格 · 主人自定义角色卡（构建期烘焙进 system prompt，非对话内容）】\n${personaBlock}`;
+    }
+  }
   const row = {
     id: presetRowId(name),
     name: '@deepseek-ai/dsh-agent-preset',

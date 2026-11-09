@@ -317,6 +317,9 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是**同一插件的两个入口
 node build.mjs                              # lib/ui/*.js → lib/client.js（产物入库，必须重建）
 node build.mjs --check                      # 只校验产物与源一致（不一致 exit 1）
 node scripts/build-agent-preset-patches.mjs # dsh/agent-presets/* → presets/*.patch.yml
+                                            # 若存在 dsh/agent-presets/persona.system.md（插件自动生成的
+                                            # 人格快照，不入库），会把它烘进三个预设的 system prompt；
+                                            # 这两个产物都是运行期文件，不进 git
 node scripts/build-agent-preset-patches.mjs --check
 
 node scripts/version.mjs check              # 版本一致性（package.json / README / AGENT / CHANGELOG / tag）

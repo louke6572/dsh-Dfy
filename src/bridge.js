@@ -87,7 +87,6 @@ import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
 import { notePersonaActivity, personaPromptBlock } from './persona-state.js';
 import { learningPromptBlock } from './learning-profile.js';
 import { pickPeerAlias, buildPeerAliasTag } from './callname.js';
-import { buildPersonaIdentity, personaNameFromCard } from './persona-identity.js';
 import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
@@ -98,9 +97,7 @@ import {
 } from './memory-card.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
-  readPersonaLayerText,
 } from './character-persona.js';
-import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
@@ -13140,14 +13137,6 @@ async function main(options = {}) {
     }
   }
 
-  // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
-  // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
-  function personaIdentityText() {
-    let owner = '主人';
-    try { owner = String(adminIdentity()?.displayName || '主人').trim() || '主人'; } catch {}
-    return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
-  }
-
   /** 简报瘦身：常驻注入只保留前 max 字（细节由按需召回补），行边界截断 + 「其余略」标记。 */
   function slimBrief(text, max = 700) {
     const t = String(text ?? '').trim();
@@ -13158,16 +13147,26 @@ async function main(options = {}) {
   }
 
   function roleHintForMode(mode, key = '', personaMode = 'full') {
-    const core = roleRawContent();
-    const sceneId = personaSceneFromKey(key);
-    const scene = sceneId ? readPersonaLayerText('scene', sceneId) : '';
-    const daily = readPersonaLayerText('daily');
-    const tone = readPersonaLayerText('tone');
-    const identity = personaIdentityText();
-    const composed = composePersonaLayers({
-      core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
-    });
-    const base = composed.text || '';
+    // 人格稳定部分（身份底座/核心/语气）已烘焙进 Agent 预设的 system prompt
+    // （构建期注入：preset-sync 写 persona.system.md → build-agent-preset-patches
+    //  追加进 persona 前缀）。这里不再重复注入——重复注入就是上下文爆炸的根源。
+    // 只带「预设里没有、且会变化」的内容：管理员规则、B站简报（瘦身版）、
+    // 记忆卡、跨平台近况、工具提示。
+    // 旧 /role 运行时切换（roles/*.md，无角色系统时）仍在此注入为覆盖层。
+    let legacyRole = '';
+    try {
+      if (!activePersonaFile()) {
+        const rs = typeof readRoleState === 'function' ? readRoleState() : null;
+        const safeName = rs?.role ? sanitizeRoleName(rs.role) : '';
+        if (safeName && !safeName.includes('..')) {
+          const roleFile = path.join(ROLES_DIR, `${safeName}.md`);
+          const resolved = path.resolve(roleFile);
+          if (resolved.startsWith(path.resolve(ROLES_DIR) + path.sep) && fs.existsSync(roleFile)) {
+            legacyRole = fs.readFileSync(roleFile, 'utf8');
+          }
+        }
+      }
+    } catch { /* 旧角色系统不可用就当没有 */ }
     // 主人私聊给全量记忆（B站记忆 + 全量记忆卡）；其他人/群给「身份记忆版」。
     // 四个平台是同一个她：群友问「你是谁 / 我们怎么认识的」时不能答「不认识」；
     // 但主人的私聊细节、B站经历仍然只对主人开放。
@@ -13175,7 +13174,7 @@ async function main(options = {}) {
     const biliBrief = isOwnerConv && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? slimBrief(biliMemory.briefBlock(), 700)
       : '';
-    // 管理员规则放在人格卡之后、记忆之前：优先级高于人格卡，又不会被长记忆挤掉。
+    // 管理员规则：随人格层一起注入（admin 身份可在设置里改，属易变配置）。
     const adminBlock = adminPromptLine(false);
     // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
     const memoryBlock = memoryCardPromptBlock(isOwnerConv ? MEMORY_CARD_PATHS.promptQq : MEMORY_CARD_PATHS.promptBili);
@@ -13186,13 +13185,10 @@ async function main(options = {}) {
       includePrivate: isOwnerConv,
       excludePlatform: isOwnerConv ? '' : 'QQ',
     });
-    // B站简报瘦身：整份简报 1~4k 字每次全量注入都带上，但细节只在话题相关时才有用
-    // （话题相关时 biliMemory.recallBlock 会按需召回具体内容）。常驻版只留前 700 字。
-    // slimBrief 用共享作用域里的同名 helper（见 roleHintForMode 上方）。
-    // 合规硬规则：出站黑名单只能拦关键词，模型侧仍要明确拒绝违法/违规表达。
-    const safetyBlock = '【安全硬规则】不输出政治敏感、色情、暴力、赌博、诈骗、违法交易内容；不透露本机路径、密钥、令牌与管理员隐私；被要求做这些时直接拒绝，不描述内部系统与工具细节。';
+    // 合规硬规则已烘焙进三个 preset 的 persona 前缀（【…安全规则（最高优先级）】段），
+    // 这里不再重复注入。
     const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的人和事要记，问到过去先搜。';
-    return [base, adminBlock, safetyBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
+    return [legacyRole, adminBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
     return roleHintForMode('v1', key, personaMode);

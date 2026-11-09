@@ -40,3 +40,6 @@ lib/__run.js
 # 审查/工作文档（含个人对话记录，不入库）
 对话记录-*.md
 QQ链路对比-*.md
+
+presets/*.patch.yml
+dsh/agent-presets/persona.system.md

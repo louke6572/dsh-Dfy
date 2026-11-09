@@ -128,6 +128,7 @@ import { createPersonaClassifier } from './persona-classify.js';
 import { personaSnapshot, setPersonaMood, setPersonaQuirks } from '../../src/persona-state.js';
 import { createLearningLoop } from './learning-loop.js';
 import { createMemoryOrganizer } from './memory-organize.js';
+import { syncPersonaSystemPreset } from './preset-sync.js';
 import { rollbackAutoPersona } from '../../src/learning-profile.js';
 
 // 版本号对外只有一个来源：合并后的 dsh-Dfy 主包（plugins/surfcore-next/package.json）。
@@ -616,6 +617,13 @@ export function apply(ctx) {
 
   // 启动时先重建身份对齐提示块（bridge 与 B站调度器都读它）。
   try { writeAlignmentBriefs(); } catch (error) { pluginLog('启动时写对齐简报失败：', error?.message ?? error); }
+  // 人格 → Agent 预设 同步自检：人格稳定部分（身份/核心/语气）烘焙进预设的
+  // system prompt（不进对话记录、缓存友好、压缩压不掉）。内容有变化时重建
+  // patch 并提示重启；没变化时不写不动。
+  try {
+    const presetSync = syncPersonaSystemPreset({ log: pluginLog });
+    if (presetSync.changed) pluginLog('⚠️ Agent 预设人格有更新：重启 DSH 后对新会话生效。');
+  } catch (error) { pluginLog('启动时同步人格到 Agent 预设失败：', error?.message ?? error); }
 
   // ── 平台启动开关（2026-10-24 用户要求：不是所有用户都想同时开 QQ / B站）──
   // 唯一真相在合体层 config.json 的 platforms.start.{qq,bili}；旧 bridge.autoStart
@@ -829,6 +837,8 @@ export function apply(ctx) {
       const archived = archiveBridgeRuntimeState();
       // 先把新角色的记忆卡 prompt 生成好，再启动桥接/调度器，避免开头几条提示词读不到记忆。
       await runMemoryCardMaintenance({}).catch((error) => pluginLog('切换角色后整理记忆卡失败：', error?.message ?? error));
+      // 新角色的人格稳定部分同步进 Agent 预设（system prompt）；桥接随后重启会带上。
+      syncPersonaSystemPreset({ log: pluginLog });
       if (wasRunning) {
         const started = await startBridge({ dshWebUrl: currentDshUrl() });
         if (!started.ok) pluginLog('切换角色：桥接重启失败（角色已切换，平台保持停止）：', started.error || started.message);
@@ -1857,6 +1867,7 @@ ${body}`;
       fs.copyFileSync(source, target);
       const cur = readCurrentCharacter();
       if (cur) touchCharacter(cur.id);
+      syncPersonaSystemPreset({ log: pluginLog });
       json(res, 200, { ok: true, restored: name, target, text: readTextFile(target), layers: layerPaths() });
       return;
     }
@@ -1899,7 +1910,9 @@ ${body}`;
         writeTextAtomic(target, text.endsWith('\n') ? text : `${text}\n`);
     const cur = readCurrentCharacter();
     if (cur) touchCharacter(cur.id);
-    json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths() });
+    // 人格层变更 → 同步烘焙进 Agent 预设的 system prompt（重启 DSH 后生效）。
+    const presetSync = syncPersonaSystemPreset({ log: pluginLog });
+    json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths(), presetSync: { changed: presetSync.changed, restartRequired: presetSync.changed } });
   }
 
   // ── 记忆 ────────────────────────────────────────────────────────────────

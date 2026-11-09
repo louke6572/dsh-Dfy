@@ -13048,7 +13048,7 @@ async function main(options = {}) {
     });
     // 合规硬规则：出站黑名单只能拦关键词，模型侧仍要明确拒绝违法/违规表达。
     const safetyBlock = '【安全硬规则】不输出政治敏感、色情、暴力、赌博、诈骗、违法交易内容；不透露本机路径、密钥、令牌与管理员隐私；被要求做这些时直接拒绝，不描述内部系统与工具细节。';
-    const toolHint = '【可用工具】长期记忆：mcp__memory__create_entities / add_observations / search_nodes / read_graph（QQ/抖音/桌宠共用一份知识图谱；重要的人和事要记，问到过去先搜）。表情：工具里有 sticker_search / sticker_send 时，需要发表情先 search 再 send，把它返回的 Markdown 图片行放进回复（桥接会转成 QQ 图片）。';
+    const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的人和事要记，问到过去先搜。';
     return [base, adminBlock, safetyBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {

@@ -239,8 +239,85 @@ function QQ_STATE_DIR() {
 export const name = 'surfcore';
 export const inject = ['webServer', 'connection', 'sessionController'];
 
+/**
+ * 内置表情工具（属于本插件，不依赖外部表情插件）。
+ * 参数必须是完整 JSON Schema——之前用简写导致注册阶段抛错、整个插件加载失败，已修正。
+ */
+function registerStickerTools(ctx) {
+  const install = (scope) => {
+    try {
+      if (!scope?.tools?.register) return;
+      const kit = createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log: pluginLog });
+      const output = {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: { text: { type: 'string' } }, required: ['text'],
+        },
+        render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+      };
+      scope.tools.register({
+        name: 'sticker_search',
+        description: '在大肥鱼表情包里按情绪/场景词搜表情，返回名字列表；挑好后用 sticker_send。',
+        parameters: {
+          type: 'object', additionalProperties: false,
+          properties: { query: { type: 'string', description: '情绪/场景词，如 摸鱼 被夸 无语 好累' } },
+          required: ['query'],
+        },
+        output,
+        async execute(args) {
+          const query = String(args?.query ?? '').trim();
+          const { items } = await kit.loadKit();
+          const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+          const hits = items
+            .map((item) => {
+              const hay = `${item.name} ${item.emotion || ''} ${(item.tags || []).join(' ')}`.toLowerCase();
+              let score = 0;
+              for (const word of words) if (word && hay.includes(word)) score += 1;
+              return { item, score };
+            })
+            .filter((row) => row.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 8);
+          if (!hits.length) return { text: `没有搜到「${query}」相关表情，换个词。` };
+          return { text: hits.map(({ item }) => `${item.name}｜${item.emotion || '—'}｜${(item.tags || []).slice(0, 3).join(' ')}`).join('\n') };
+        },
+      });
+      scope.tools.register({
+        name: 'sticker_send',
+        description: '发一张大肥鱼表情。返回一行 Markdown 图片，把它原样放进你的回复里即可发到 QQ（不需要 token，也不要用 qq_send_sticker）。',
+        parameters: {
+          type: 'object', additionalProperties: false,
+          properties: { name: { type: 'string', description: 'sticker_search 返回的名字，或情绪词' } },
+          required: ['name'],
+        },
+        output,
+        async execute(args) {
+          const wanted = String(args?.name ?? '').trim();
+          if (!wanted) throw new Error('name 不能为空');
+          const { items } = await kit.loadKit();
+          const exact = items.find((item) => item.name === wanted || item.name.includes(wanted) || String(item.file || '').includes(wanted));
+          const item = exact || await kit.pick(wanted, { minScore: 1 });
+          if (!item) throw new Error(`没有匹配「${wanted}」的表情，先用 sticker_search 搜一下`);
+          const file = await kit.download(item);
+          return { text: `![${item.name}](${file})` };
+        },
+      });
+      pluginLog('[sticker] 内置表情工具已注册：sticker_search / sticker_send');
+    } catch (error) {
+      pluginLog('[sticker] 注册表情工具失败：', String(error?.message ?? error));
+    }
+  };
+  try {
+    if (typeof ctx?.inject === 'function') ctx.inject(['tools'], install);
+    else install(ctx);
+  } catch (error) {
+    pluginLog('[sticker] 延迟注册表情工具失败：', String(error?.message ?? error));
+  }
+}
+
 export function apply(ctx) {
   ensureDirs();
+  registerStickerTools(ctx);
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。

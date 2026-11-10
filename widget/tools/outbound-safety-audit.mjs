@@ -257,6 +257,18 @@ ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
   }
 }
 
+// ── 9) 回合文本：只保留最后一段，避免跨 step 车轱辘话 ─────────────────
+//     工具回合里模型常在 tool-call 那步先说一句，拿到结果后又把同一句写进最终回复；
+//     collector 若按 step 累加，QQ 上就会收到「同一句话两遍」。
+{
+  const clientSrc = read(path.join(ROOT, 'src', 'dsh-client.js'));
+  const body = /export function createTurnCollector[\s\S]*?\n\}/.exec(clientSrc)?.[0] ?? '';
+  if (!body) fail('[回合文本] 找不到 createTurnCollector');
+  else if (/t\.text\s*\+=/.test(body)) {
+    fail('[回合文本] createTurnCollector 又在跨 step 累加文本（会出现车轱辘话）');
+  } else ok('createTurnCollector 只保留最后一段文本');
+}
+
 // ── 结果 ──────────────────────────────────────────────────────────────
 for (const n of notes) console.log(`  ok   ${n}`);
 if (failures.length) {

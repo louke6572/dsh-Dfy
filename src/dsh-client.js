@@ -965,9 +965,16 @@ export function createTurnCollector() {
       if (event.type === 'assistant/message') {
         const t = turns.get(event.data.turn);
         if (!t) return null;
-        for (const block of event.data.message?.content ?? []) {
-          if (block?.type === 'text' && typeof block.text === 'string') t.text += block.text;
-        }
+        // 只保留「最后一段有文字的 assistant 消息」，不要跨 step 累加：
+        // 工具回合里模型常在 tool-call 那一步先说一句（“刚忙完就来找我…”），
+        // 拿到工具结果后又把同一句写进最终回复，累加就会发成
+        // 「…刚忙完就来找我… 刚忙完就来找我…」这种车轱辘话。
+        // 覆盖而不是追加：后一段有字就用后一段；纯工具消息不动上一段。
+        const text = (event.data.message?.content ?? [])
+          .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('');
+        if (text.trim()) t.text = text;
         return null;
       }
       if (event.type === 'turn/end') {

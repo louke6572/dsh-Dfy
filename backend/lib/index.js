@@ -1086,6 +1086,8 @@ export function apply(ctx) {
     if (snowBootBusy) return { ok: true, skipped: 'busy' };
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return { ok: true, skipped: 'skip-autostart' };
     const cfg = readQqConfig().config?.snowluma ?? {};
+    // 直连模式：不接管 SnowLuma（用户自备 OneBot 实现，如 NapCat），这里什么都不做。
+    if (cfg.managed === false) return { ok: true, skipped: 'direct-mode' };
     if (cfg.allowLaunch !== true) return { ok: true, skipped: 'allowLaunch=false' };
     if (Date.now() - snowBootFailAt < 5 * 60_000) return { ok: false, skipped: 'cooldown' };
     snowBootBusy = true;
@@ -4850,8 +4852,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         // SnowLuma → AstrBot 的出站客户端以前是手工配置（不写就会「插件装了用不了」）；这里自愈，只增补缺失项。
         // 内置版（qqRuntime=builtin）时绝对不能补：那会让 AstrBot 重新抢走 QQ 事件。
         const qqRuntimeNow = readQqRuntimeMode();
+        const snowlumaManaged = readQqConfig().config?.snowluma?.managed !== false;
         let snowlumaClient = { ok: false, changed: false };
-        if (qqRuntimeNow === 'astrbot') {
+        if (qqRuntimeNow === 'astrbot' && snowlumaManaged) {
           try {
             snowlumaClient = ensureAstrbotWsClient({ cfg: readQqConfig().config ?? {}, url: 'ws://127.0.0.1:6199/ws' });
           } catch (error) {
@@ -4859,7 +4862,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           }
         }
         json(res, 200, {
-          ok: true, plugins, qqConnected, routeB, qqRuntime: qqRuntimeNow,
+          ok: true, plugins, qqConnected, routeB, qqRuntime: qqRuntimeNow, snowlumaManaged,
           snowlumaClient: { ...snowlumaClient, needRestart: snowlumaClient.changed === true && qqConnected !== true },
         });
       } catch (error) {

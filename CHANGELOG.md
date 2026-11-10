@@ -159,15 +159,14 @@
 
 ## [0.7.7] - 2026-11-10
 
-### 修复
+### 说明（仅文档，不改安装逻辑）
 
-- **SnowLuma 下载源失效**：官方仓库 `github.com/SnowLuma/SnowLuma` 已于 2026-11 下线（HTTP 404），
-  组织下只剩 `.github`。新用户装插件后无法下载 SnowLuma，QQ 功能会不可用。
-  - 安装脚本默认改走社区镜像 `TomyJan/SnowLuma`（v2.4.2，Windows zip 齐全，内容与原版一致）。
-  - 支持环境变量覆盖：`SNOWLUMA_REPO=owner/repo`、`SNOWLUMA_ZIP_URL=<zip 直链>`。
-  - 下载失败时明确提示：官方已下线 + 换镜像/手动指定的做法。
-  - 设置页「打开下载页（镜像）」「手动选择」入口同步改指向；AGENT 安装说明更新。
-- 已安装用户不受影响：本地 SnowLuma 文件与登录态不变，照常可用。
+- SnowLuma 官方仓库 `github.com/SnowLuma/SnowLuma` 已于 2026-11 下线（HTTP 404），组织下只剩 `.github`。
+- 插件**不内置** SnowLuma、**不镜像**、**不改用第三方源**；安装包由用户自行准备，通过设置页
+  「安装与维护 → 手动选择」指定已解压目录。
+- 已安装用户不受影响：本地文件与登录态不变。
+- 现状说明：内置版与 AstrBot 版都以 SnowLuma 作为 QQ 登录层；AstrBot 只负责接入与插件，
+  不替代登录层。如需接其他 OneBot 实现，由用户自行配置。
 
 ## [0.7.6] - 2026-11-09
 

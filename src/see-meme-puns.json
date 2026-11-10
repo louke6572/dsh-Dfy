@@ -1,0 +1,831 @@
+[
+ {
+  "origin": "多损",
+  "variants": [
+   "夺笋"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "难受想哭",
+  "variants": [
+   "蓝瘦香菇"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "太难了",
+  "variants": [
+   "太南了",
+   "太蓝了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "压力山大",
+  "variants": [
+   "鸭梨山大"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "与你无关",
+  "variants": [
+   "雨女无瓜"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "不知道",
+  "variants": [
+   "布吉岛"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "真的假的",
+  "variants": [
+   "尊嘟假嘟"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "太酷啦",
+  "variants": [
+   "泰裤辣"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "绷不住了",
+  "variants": [
+   "蚌埠住了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "一坨大便",
+  "variants": [
+   "依托答辩"
+  ],
+  "note": "骂东西烂"
+ },
+ {
+  "origin": "我不理解",
+  "variants": [
+   "我不李姐"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "怎么回事",
+  "variants": [
+   "怎么肥四",
+   "怎么肥事"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "我服了",
+  "variants": [
+   "我佛了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "姐妹",
+  "variants": [
+   "集美"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "喜欢",
+  "variants": [
+   "稀饭"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "什么",
+  "variants": [
+   "神马",
+   "虾米",
+   "啥米"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "怎么",
+  "variants": [
+   "肿么"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "这样子",
+  "variants": [
+   "酱紫"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "不要这样子",
+  "variants": [
+   "表酱紫"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "不开心",
+  "variants": [
+   "伐开心"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "有没有",
+  "variants": [
+   "有木有"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "没有",
+  "variants": [
+   "木有"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "同学",
+  "variants": [
+   "童鞋"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "朋友",
+  "variants": [
+   "盆友"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "姑娘",
+  "variants": [
+   "菇凉"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "男孩子",
+  "variants": [
+   "蓝孩子",
+   "男孩纸"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "女孩子",
+  "variants": [
+   "女孩纸"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "强烈",
+  "variants": [
+   "墙裂"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "非常",
+  "variants": [
+   "灰常"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "长知识",
+  "variants": [
+   "涨姿势"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "激动",
+  "variants": [
+   "鸡冻"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "泪流满面",
+  "variants": [
+   "内牛满面"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "悲剧",
+  "variants": [
+   "杯具"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "和谐",
+  "variants": [
+   "河蟹"
+  ],
+  "note": "被和谐 = 被删、被屏蔽"
+ },
+ {
+  "origin": "你知道吗",
+  "variants": [
+   "你造吗"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "那味儿",
+  "variants": [
+   "内味"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "那个",
+  "variants": [
+   "内个"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "这个",
+  "variants": [
+   "介个"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "人家",
+  "variants": [
+   "银家"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "我的神",
+  "variants": [
+   "额滴神"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "举个例子",
+  "variants": [
+   "举个栗子"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "厉害了我的哥",
+  "variants": [
+   "厉害了word哥"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "出大事了",
+  "variants": [
+   "粗大事了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "出来",
+  "variants": [
+   "粗来"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "杀了我",
+  "variants": [
+   "鲨了我"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "祝你",
+  "variants": [
+   "猪你"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "数你最美",
+  "variants": [
+   "鼠你最美"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "加油呀",
+  "variants": [
+   "加油鸭"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "冲呀",
+  "variants": [
+   "冲鸭"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "愉快",
+  "variants": [
+   "鱼快"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "余生",
+  "variants": [
+   "鱼生"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "与你",
+  "variants": [
+   "鱼你"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "程序员",
+  "variants": [
+   "程序猿",
+   "程序媛"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "工程师",
+  "variants": [
+   "攻城狮"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "设计师",
+  "variants": [
+   "射鸡师"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "机不可失",
+  "variants": [
+   "鸡不可失"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "默默无闻",
+  "variants": [
+   "默默无蚊"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "百依百顺",
+  "variants": [
+   "百衣百顺"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "刻不容缓",
+  "variants": [
+   "咳不容缓"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "其乐无穷",
+  "variants": [
+   "骑乐无穷"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "一往情深",
+  "variants": [
+   "一网情深"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "无稽之谈",
+  "variants": [
+   "无鸡之谈"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "百感交集",
+  "variants": [
+   "百感交鸡"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "有备无患",
+  "variants": [
+   "有杯无患"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "天长地久",
+  "variants": [
+   "天长地酒"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "贤妻良母",
+  "variants": [
+   "闲妻良母"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "随心所欲",
+  "variants": [
+   "随心所浴"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "步步为营",
+  "variants": [
+   "步步为赢"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "十全十美",
+  "variants": [
+   "食全食美"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "一见钟情",
+  "variants": [
+   "衣见钟情"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "别来无恙",
+  "variants": [
+   "鳖来无恙"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "马到成功",
+  "variants": [
+   "码到成功"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "前途无量",
+  "variants": [
+   "钱途无量"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "前途似锦",
+  "variants": [
+   "前兔似锦",
+   "钱途似锦"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "大展宏图",
+  "variants": [
+   "大展宏兔"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "前途",
+  "variants": [
+   "钱途"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "心想事成",
+  "variants": [
+   "鑫想事成"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "万事如意",
+  "variants": [
+   "万柿如意"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "事事如意",
+  "variants": [
+   "柿柿如意"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "年年有余",
+  "variants": [
+   "年年有鱼"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "连年有余",
+  "variants": [
+   "莲年有鱼"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "岁岁平安",
+  "variants": [
+   "碎碎平安"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "早生贵子",
+  "variants": [
+   "枣生桂子"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "大吉大利",
+  "variants": [
+   "大鸡大利"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "喜气洋洋",
+  "variants": [
+   "喜气羊羊"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "三阳开泰",
+  "variants": [
+   "三羊开泰"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "扭转乾坤",
+  "variants": [
+   "牛转乾坤"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "时来运转",
+  "variants": [
+   "蛇来运转"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "福到了",
+  "variants": [
+   "福倒了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "thank you",
+  "variants": [
+   "栓Q",
+   "三克油",
+   "3Q"
+  ],
+  "note": "谢谢，常带点无奈"
+ },
+ {
+  "origin": "barbecue",
+  "variants": [
+   "芭比Q"
+  ],
+  "note": "烧烤；「芭比Q了」= 完了"
+ },
+ {
+  "origin": "go die",
+  "variants": [
+   "狗带"
+  ],
+  "note": "去死，开玩笑的说法"
+ },
+ {
+  "origin": "sorry",
+  "variants": [
+   "骚瑞"
+  ],
+  "note": "对不起"
+ },
+ {
+  "origin": "interesting",
+  "variants": [
+   "因吹斯听"
+  ],
+  "note": "有意思"
+ },
+ {
+  "origin": "happy",
+  "variants": [
+   "哈皮"
+  ],
+  "note": "开心"
+ },
+ {
+  "origin": "I love you",
+  "variants": [
+   "爱老虎油"
+  ],
+  "note": "我爱你"
+ },
+ {
+  "origin": "nice",
+  "variants": [
+   "耐撕"
+  ],
+  "note": "好"
+ },
+ {
+  "origin": "OK 了",
+  "variants": [
+   "欧了"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "だめ",
+  "variants": [
+   "达咩"
+  ],
+  "note": "日语：不行"
+ },
+ {
+  "origin": "すごい",
+  "variants": [
+   "斯国一"
+  ],
+  "note": "日语：厉害"
+ },
+ {
+  "origin": "かわいい",
+  "variants": [
+   "卡哇伊"
+  ],
+  "note": "日语：可爱"
+ },
+ {
+  "origin": "ありがとう",
+  "variants": [
+   "阿里嘎多"
+  ],
+  "note": "日语：谢谢"
+ },
+ {
+  "origin": "さようなら",
+  "variants": [
+   "撒由那拉"
+  ],
+  "note": "日语：再见"
+ },
+ {
+  "origin": "わたし",
+  "variants": [
+   "瓦塔西"
+  ],
+  "note": "日语：我"
+ },
+ {
+  "origin": "好犀利",
+  "variants": [
+   "猴赛雷"
+  ],
+  "note": "粤语：好厉害"
+ },
+ {
+  "origin": "你好",
+  "variants": [
+   "雷猴"
+  ],
+  "note": "粤语"
+ },
+ {
+  "origin": "我爱你",
+  "variants": [
+   "520",
+   "521"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "一生一世",
+  "variants": [
+   "1314"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "我爱你一生一世",
+  "variants": [
+   "5201314"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "拜拜了",
+  "variants": [
+   "886"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "呜呜呜",
+  "variants": [
+   "555"
+  ],
+  "note": "哭"
+ },
+ {
+  "origin": "溜",
+  "variants": [
+   "666"
+  ],
+  "note": "很厉害"
+ },
+ {
+  "origin": "气死我了",
+  "variants": [
+   "7456"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "就是就是",
+  "variants": [
+   "9494"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "我想你",
+  "variants": [
+   "530"
+  ],
+  "note": ""
+ },
+ {
+  "origin": "二百五",
+  "variants": [
+   "250"
+  ],
+  "note": "骂人傻"
+ },
+ {
+  "origin": "去死吧",
+  "variants": [
+   "748"
+  ],
+  "note": "骂人的"
+ }
+]

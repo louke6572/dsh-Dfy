@@ -44,6 +44,9 @@ import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-po
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { DEFAULT_EDGE_VOICE } from './voice-edge-tts.js';
+import { createSeeMeme } from './see-meme.js';
+import { memeWikiPromptBlock } from './meme-wiki.js';
+import { getQqRuntimeServices } from './qq-runtime-services.js';
 import { DEFAULT_BASE_URL as DEFAULT_VOXD_URL } from './voice-tts.js';
 import { DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from './voice-online-tts.js';
 import { DOUBAO_DEFAULT_VOICE } from './voice-doubao-tts.js';
@@ -917,6 +920,23 @@ function loadConfig() {
       workspaceTitle: 'QQ 黑话学习',
       autoResearch: true,
       ...(file.slang ?? {})
+    },
+    // 看图懂梗（内置版，移植自 astrbot_plugin_fatfish_seememe v0.4.0）
+    seeMeme: {
+      enabled: true,
+      // 留空 = 用当前对话模型（需支持图片输入）
+      provider: '',
+      model: '',
+      maxPerTurn: 3,
+      maxChars: 180,
+      hourlyLimit: 60,
+      dailyLimit: 300,
+      puns: true,
+      lookup: true,
+      timeoutMs: 25000,
+      botNames: [],
+      botLook: '',
+      ...(file.seeMeme ?? {})
     },
     social: {
       enabled: true,
@@ -9983,6 +10003,46 @@ async function main(options = {}) {
     return parts;
   }
 
+  // ── 看图懂梗（内置版）────────────────────────────────────────────────────
+  // 回话前先把图交给视觉模型，按「字 / 画面 / 梗 / 跟你 / 坑」写清楚，
+  // 再把结果并进这一轮的 prompt。同一张图按内容哈希缓存，只花一次看图钱。
+  const seeMemeEngine = (() => {
+    if (cfg.seeMeme?.enabled === false) return null;
+    try {
+      return createSeeMeme({
+        config: cfg.seeMeme ?? {},
+        cacheFile: path.join(STATE_DIR, 'see-meme-cache.json'),
+        log,
+        resolveModel: () => {
+          try {
+            const target = JSON.parse(fs.readFileSync(path.join(SHARED_DSH_HOME, 'surfcore', 'config.json'), 'utf8'))?.model;
+            if (target?.provider && target?.model) return target;
+          } catch { /* 读不到就用桥接配置 */ }
+          return { provider: cfg.dsh.provider, model: cfg.dsh.model };
+        },
+        services: getQqRuntimeServices,
+      });
+    } catch (error) {
+      log(`[看图] 初始化失败：${error?.message ?? error}`);
+      return null;
+    }
+  })();
+
+  /** 分析这一轮的图；返回要并进 prompt 的「看图」段（没有图/失败时为空串）。 */
+  async function seeMemeForTurn(promptText, imageParts) {
+    if (!seeMemeEngine || !Array.isArray(imageParts) || !imageParts.some((part) => part?.type === 'image')) return '';
+    try {
+      return await seeMemeEngine.analyzeTurn({
+        imageParts,
+        saidText: String(promptText ?? '').slice(-600),
+        sender: '有人',
+      });
+    } catch (error) {
+      log(`[看图] 分析失败：${String(error?.message ?? error).slice(0, 160)}`);
+      return '';
+    }
+  }
+
   async function fetchMediaData(mediaList) {
     const out = [];
     let index = 0;
@@ -10137,7 +10197,10 @@ async function main(options = {}) {
     const sent = [];
     const failed = [];
     for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+      // 工具直发路径同样要过 humanize（以前只有 sendToQQ / sendBurstToQQ 过）：
+      // 去掉客服腔、句末句号，避免二代工具发送绕过人格卡的「不用句号」规则。
+      const msg = humanizeReplyText(messages[i]);
+      if (!msg) continue; // 清洗后为空（整条都是客服套话）就不发空消息
       const useReply = i === 0 ? replyToMessageId : null;
       const useAt = i === 0 ? atUserId : null;
       sendChain = sendChain
@@ -12763,11 +12826,14 @@ async function main(options = {}) {
         });
       } catch {}
     }
-    let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
-    if (Array.isArray(opts.media) && opts.media.length > 0) {
-      const imageParts = await resolveMediaList(opts.media);
-      content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }, ...imageParts];
-    }
+    const imageParts = Array.isArray(opts.media) && opts.media.length > 0 ? await resolveMediaList(opts.media) : [];
+    const seeMemeBlock = await seeMemeForTurn(promptText, imageParts);
+    // 梗百科：只扫这段提示的最后几十行，命中才注入那一条词条（内置词库，不联网）
+    const memeWikiBlock = memeWikiPromptBlock(promptText);
+    if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
+    const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
+    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));
+    const content = [{ type: 'text', text: turnText }, ...imageParts];
     // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
     if (opts.farewell) social.exitingSessions.add(sessionId);
@@ -15846,11 +15912,14 @@ async function main(options = {}) {
       }
       throw error;
     }
-    let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
-    if (Array.isArray(mediaList) && mediaList.length > 0) {
-      const imageParts = await resolveMediaList(mediaList);
-      content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }, ...imageParts];
-    }
+    const imageParts = Array.isArray(mediaList) && mediaList.length > 0 ? await resolveMediaList(mediaList) : [];
+    const seeMemeBlock = await seeMemeForTurn(promptText, imageParts);
+    // 梗百科：只扫这段提示的最后几十行，命中才注入那一条词条（内置词库，不联网）
+    const memeWikiBlock = memeWikiPromptBlock(promptText);
+    if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
+    const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
+    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));
+    const content = [{ type: 'text', text: turnText }, ...imageParts];
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
     const accepted = await api.sessions.prompt({
       sessionId,

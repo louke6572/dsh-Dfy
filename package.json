@@ -94,6 +94,7 @@
     "locale",
     "public",
     "assets",
+    "data",
     "roles",
     "examples",
     "dsh",

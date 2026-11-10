@@ -126,6 +126,7 @@ import { createContextTelemetry } from '../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
 import { personaSnapshot, setPersonaMood, setPersonaQuirks } from '../../src/persona-state.js';
+import { setQqRuntimeServices } from '../../src/qq-runtime-services.js';
 import { createLearningLoop } from './learning-loop.js';
 import { createMemoryOrganizer } from './memory-organize.js';
 import { syncPersonaSystemPreset, personaPresetStatus } from './preset-sync.mjs';
@@ -516,6 +517,8 @@ export function apply(ctx) {
     const getService = (name) => { try { return ctx.get?.(name); } catch { return undefined; } };
     llmService = getService('llm');
     defaultModelService = getService('agentDefaultModel');
+    // 内嵌 QQ 桥接拿不到 ctx：把看图懂梗要用的 llm / attachments 共享过去。
+    setQqRuntimeServices({ llm: llmService, attachments: getService('attachments') });
     configureDouyinChatModel({
       llm: llmService,
       attachments: getService('attachments'),
@@ -529,7 +532,8 @@ export function apply(ctx) {
   // 抖音私信：douyin-im 长连接（不需要浏览器），回复同样走 DSH 会话。
   configureDouyinImLog((message) => pluginLog(message));
   try {
-    configureDouyinIm({ ctx });
+    // getBaseUrl：抖音会话要注册成「抖音聊天」工作区，DSH 侧栏才看得到（和 QQ 一样）。
+    configureDouyinIm({ ctx, getBaseUrl: () => currentDshUrl() });
   } catch (error) { pluginLog('[抖音IM] 插件上下文注入失败：', String(error?.message ?? error).slice(0, 160)); }
   platforms.setStatus('douyin', async () => {
     const status = await douyinStatus();

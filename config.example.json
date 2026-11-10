@@ -134,6 +134,10 @@
     "workspaceTitle": "QQ 黑话学习",
     "autoResearch": true
   },
+  "memeWiki": {
+    "enabled": true,
+    "maxChars": 360
+  },
   "social": {
     "enabled": true,
     "maxReplyChars": 500,

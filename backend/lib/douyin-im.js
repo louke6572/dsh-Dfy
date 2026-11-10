@@ -32,6 +32,8 @@ import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
 import { redactLocalPaths } from '../../src/redact-paths.mjs';
 import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
 import { createMemoryRecall } from '../../src/memory-recall.mjs';
+import { memeWikiPromptBlock } from '../../src/meme-wiki.js';
+import { NodeApiClient, unwrap, discoverDshLaunchToken } from '../../src/dsh-client.js';
 
 // 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
 function memoryRecordMode() {
@@ -190,12 +192,15 @@ let disposed = false;
 const chatByKey = new Map();
 const chatBySession = new Map();
 let sessionEventOff = null;
+// DSH 的 web 地址（由 index.js 注入 currentDshUrl）：注册工作区要用它。
+let dshBaseUrl = () => '';
 
-export function configureDouyinIm({ ctx } = {}) {
+export function configureDouyinIm({ ctx, getBaseUrl } = {}) {
   if (ctx !== undefined) {
     pluginCtx = ctx;
     bindSessionEvents();
   }
+  if (typeof getBaseUrl === 'function') dshBaseUrl = getBaseUrl;
 }
 
 function bindSessionEvents() {
@@ -252,8 +257,85 @@ function settleChat(chat, reason) {
 // 这里用一个永不中断的 signal：单轮超时由 wait 的 timeoutMs 自己控制。
 const CONTROLLER_SIGNAL = new AbortController().signal;
 
+// ── 工作区注册：DSH 侧栏按工作区分组 ────────────────────────────────────────
+// QQ 桥接建会话前会把 agents 目录注册成「QQ 聊天」工作区；抖音以前只给 cwd，
+// 而 DSH 只认建会话时带的 workspaceId，所以侧栏里一直看不到抖音会话。
+
+const WORKSPACE_TITLE = '抖音聊天';
+const workspaceRegistryFile = () => path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+let dshApiClient = null;
+let dshApiBase = '';
+let workspacePromise = null;
+
+/** 从 DSH 工作区注册表里找抖音目录对应的 workspaceId（没有就返回空串）。 */
+function findWorkspaceByPath() {
+  try {
+    const doc = JSON.parse(fs.readFileSync(workspaceRegistryFile(), 'utf8'));
+    const norm = (value) => path.resolve(String(value ?? '')).toLowerCase();
+    const hit = Object.entries(doc?.tables?.workspaces ?? {})
+      .find(([, workspace]) => norm(workspace?.path) === norm(WORKSPACE_DIR));
+    return hit ? String(hit[0]) : '';
+  } catch { return ''; }
+}
+
+function dshApi() {
+  const base = String(dshBaseUrl?.() ?? '').replace(/\/+$/, '');
+  if (!base) return null;
+  if (dshApiClient && dshApiBase === base) return dshApiClient;
+  dshApiBase = base;
+  dshApiClient = new NodeApiClient(base, undefined, { token: discoverDshLaunchToken() });
+  return dshApiClient;
+}
+
+/** 确保抖音会话目录是一个已注册工作区（首次使用时创建并命名）。 */
+function ensureDouyinWorkspace() {
+  if (workspacePromise) return workspacePromise;
+  const existing = findWorkspaceByPath();
+  if (existing) return Promise.resolve(existing);
+  const api = dshApi();
+  if (!api) return Promise.resolve('');
+  workspacePromise = (async () => {
+    const value = unwrap(await api.workspace.create({ path: WORKSPACE_DIR }), 'workspace.create');
+    const id = String(value?.workspace?.workspaceId ?? '');
+    if (value?.created && id) {
+      try { await api.workspace.rename({ workspaceId: id, title: WORKSPACE_TITLE }); }
+      catch (error) { log(`工作区改名失败（继续用默认名）：${String(error?.message ?? error).slice(0, 120)}`); }
+    }
+    return id || findWorkspaceByPath();
+  })().catch((error) => {
+    workspacePromise = null;   // 失败不缓存：DSH 端口/鉴权可能还没就绪，下次再试
+    log(`注册抖音工作区失败（侧栏可能看不到会话）：${String(error?.message ?? error).slice(0, 140)}`);
+    return '';
+  }).then((id) => {
+    if (!id) workspacePromise = null;
+    return id;
+  });
+  return workspacePromise;
+}
+
+// 注：DSH 的 workspace.insertSessionBefore 只能「在工作区内调整顺序」，
+// 不能把未记账的会话移进工作区（实测），所以老会话只能重建。
+const SESSION_MAP_FILE = path.join(IM_DIR, 'sessions.json');
+
+/** key → DSH sessionId。DSH 建会话时可能改写 id，必须记下来，重启后才能接回。 */
+function readSessionMap() {
+  const value = readJson(SESSION_MAP_FILE, {});
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function saveSessionMap(map) { writeJson(SESSION_MAP_FILE, map); }
+
+/** DSH 是否把这个会话算在工作区里（只有记账的会话才会出现在侧栏）。 */
+function isSessionAccounted(workspaceId, sessionId) {
+  if (!workspaceId || !sessionId) return true;
+  try {
+    const doc = JSON.parse(fs.readFileSync(workspaceRegistryFile(), 'utf8'));
+    const list = doc?.tables?.workspaces?.[workspaceId]?.sessionIds;
+    return Array.isArray(list) && list.includes(sessionId);
+  } catch { return false; }
+}
+
 function sessionIdOf(key) {
-  return `douyin-im-${createHash('sha1').update(String(key)).digest('hex').slice(0, 12)}`;
+  return `douyin-im-v2-${createHash('sha1').update(String(key)).digest('hex').slice(0, 12)}`;
 }
 
 /** 打开/接回会话：优先 sessionController（DSH 侧栏能看到会话），失败退回 agents（旧路径）。 */
@@ -266,22 +348,42 @@ async function openChatSession(key) {
     try { return typeof ctx.get === 'function' ? ctx.get(name) : ctx[name]; } catch { return undefined; }
   };
   try { fs.mkdirSync(WORKSPACE_DIR, { recursive: true }); } catch { /* 目录失败不影响会话 */ }
-  const sessionId = sessionIdOf(key);
+  const sessionMap = readSessionMap();
+  let sessionId = String(sessionMap[key] ?? '').trim() || sessionIdOf(key);
 
   // ── 首选：sessionController（和旧版抖音回复同一条路，DSH 侧栏/身份页能看到会话）──
   const controller = service('sessionController');
   // 主路径依赖 state/wait（发送时要按 cursor 等这一轮），DSH Remote 没暴露它们时只能走 agents 兜底。
   if (controller && typeof controller.create === 'function' && typeof controller.prompt === 'function'
     && typeof controller.wait === 'function' && typeof controller.state === 'function') {
-    // 不依赖 inspect（Remote 服务没暴露它）：用 state 探一下会话是否已经在盘上。
-    try { await controller.state({ sessionId }); }
-    catch {
+    // 先保证工作区存在：DSH 只把「建会话时带 workspaceId」的会话显示在侧栏。
+    const workspaceId = await ensureDouyinWorkspace();
+    // 能复用必须同时满足：会话在盘上，且已被 DSH 记到工作区里。
+    // 老会话（只给 cwd 建的）虽然存在，但永远不会出现在侧栏，只能重建。
+    let reusable = Boolean(sessionMap[key]);
+    if (reusable) {
+      try { await controller.state({ sessionId }); } catch { reusable = false; }
+    }
+    if (reusable && !isSessionAccounted(workspaceId, sessionId)) reusable = false;
+    if (!reusable) {
+      const base = workspaceId
+        ? { workspaceId, agentPreset: 'douyin-chat' }
+        : { cwd: WORKSPACE_DIR, agentPreset: 'douyin-chat' };
+      let created = null;
       try {
-        await controller.create({ sessionId, cwd: WORKSPACE_DIR, agentPreset: 'douyin-chat' });
-      } catch (createError) {
-        // 已存在但 state 读不到：再探一次，仍然不行才报错。
-        try { await controller.state({ sessionId }); } catch { throw createError; }
+        // 不传 sessionId，让 DSH 自己发号：旧版本会忽略自定义 id 直接重新 mint。
+        created = await controller.create(base);
+      } catch {
+        created = await controller.create({ sessionId: sessionIdOf(key), ...base });
       }
+      const actual = typeof created === 'string'
+        ? created
+        : String(created?.sessionId ?? created?.id ?? created?.session?.id ?? '');
+      if (!actual) throw new Error('DSH 没有返回新建会话的 id');
+      sessionId = actual;
+      sessionMap[key] = actual;
+      saveSessionMap(sessionMap);
+      log(`已为 ${key} 新建 DSH 会话 ${actual}（挂到工作区 ${workspaceId || '(cwd)'}）`);
     }
     await applyControllerModel(controller, sessionId);
     const chat = {
@@ -1035,8 +1137,14 @@ async function flushBatch({ conversation, batch }) {
   // 私聊给全量。与上面 memoryCardBlock(isGroup?'bili':'qq') 同一口径。
   const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' '), { platform: conversation.isGroup ? 'bili' : 'qq' }); } catch { return ''; } })();
   const mcpToolHint = '【可用工具】长期记忆：memory_remember 记重要的事、memory_search 检索过去（不要编造记不清的事）。表情：工具里有 sticker_search / sticker_send 时按需用。';
+  // 梗百科：群里冒出生梗时先把那一条词条查好，别让模型硬猜（内置词库，不联网）
+  const memeWikiBlock = memeWikiPromptBlock(lines);
+  if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
-  const personaCore = needFullContext ? douyinPersonaBlock() : '';
+  // 每轮都注入，不只首轮：老会话（人格烘焙之前创建）的 system prompt 里没有任何人格，
+  // 一旦过了 6 小时窗口就只剩通用助手行为，表现就是「聊两句就露馅」。
+  // douyinPersonaBlock 按文件 mtime 缓存，重复调用不重复读盘。
+  const personaCore = douyinPersonaBlock();
   const prompt = [
     `【抖音会话】${conversation.displayName || '未知会话'}${conversation.isGroup ? '（群聊）' : '（私聊）'}`,
     personaCore,
@@ -1044,15 +1152,17 @@ async function flushBatch({ conversation, batch }) {
     memoryRecallBlock,
     crossDigest,
     mcpToolHint,
+    memeWikiBlock,
     ...personaBits,
     '下面是刚收到的新消息。只输出要发出去的回复：',
     '- 你就是上面的角色本人，不是客服或助理：保持她的身份、性格和说话方式，不要提 AI / 模型 / 提示词；',
     '- 结合你和对方之前聊过的内容自然接话（会话历史里有），不要装作不认识、也不要复读历史；',
     // 真人感规则（参考 MaiBot 的 light 模板）：短、碎、口语、允许只给反应。
-    '- 像真人在手机上打字：句子可以短、可以不完整，可以用语气词和网络用语（哈哈、笑死、草、确实、啊这、好家伙、牛的），不要用书面腔；',
-    '- 不用每条都正面回答：可以只回一个反应（比如「笑死」「确实」「？」），可以反问回去，可以顺着对方的梗接；',
+    '- 像真人在手机上打字：句子短、可以不完整；别为了显得像人硬塞网络用语和梗；',
+    '- 多数情况只回一句，最多两条；只有真要补充时才用 ||| 分条，每条一两句话；',
+    '- 不用每条都正面回答：可以只回一个反应（「？」「行」「确实」），可以反问，也可以顺着对方的梗接；',
     '- 禁止客服腔和 AI 腔：不说「请问」「有什么可以帮你」「希望对你有帮助」，不写排比句，不做总结陈词，不礼貌过度；',
-    '- 回复拆成 1~3 条短消息，像真人连发几条一样；每条之间用 ||| 分隔，每条尽量一两句话，别写长段；',
+    '- 别接「你是不是 AI」「在考你」「调教你」「训练你」这类话题，不评论自己学没学会、露没露馅；被这么说就一句带过，不解释；',
     '- 不知道的事就说不知道，不要编造没见过的经历、人设背景或现实里没发生的事；',
     '- 看到「发来一条语音消息」说明语音内容你听不了，就自然地让对方打字再说一遍，别假装听到了；',
     '- 不要 Markdown，不要旁白，不要解释自己在做什么，不要输出表情 id 或任何系统标记。',
@@ -1128,7 +1238,7 @@ function normalizeOutgoing(input) {
 }
 
 /**
- * 把一段回复拆成最多 3 条「气泡」。模型按提示词用 ||| 分隔；
+ * 把一段回复拆成最多 2 条「气泡」。模型按提示词用 ||| 分隔；
  * 没用分隔符但有换行时按换行拆（真人打字换行≈发新条）。
  * 单条超 100 字按标点截断——超过就不像「一条消息」了。
  */
@@ -1139,7 +1249,7 @@ function splitBubbles(text) {
     .filter(Boolean);
   const bubbles = [];
   for (const part of parts) {
-    if (bubbles.length >= 3) break;
+    if (bubbles.length >= 2) break;
     if (part.length <= 100) { bubbles.push(part); continue; }
     const cut = part.slice(0, 100);
     const dot = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'), cut.lastIndexOf('…'), cut.lastIndexOf('，'));
@@ -1153,6 +1263,8 @@ export async function douyinImStart() {
   const config = douyinImConfig();
   if (!config.allowlist.length) throw new Error('还没有许可会话：先登录，点「读取好友和群」，勾选并保存');
   douyinImSaveConfig({ ...config, enabled: true });
+  // 启动时就把「抖音聊天」工作区注册好，侧栏不用等第一条消息才出现。
+  void ensureDouyinWorkspace();
   const client = await getClient();
   if (runtime.phase !== 'online') {
     runtime.phase = 'starting';

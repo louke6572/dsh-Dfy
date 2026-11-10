@@ -157,12 +157,13 @@ export function personaSnapshot(now = Date.now()) {
 export function personaPromptBlock(now = Date.now()) {
   const snap = personaSnapshot(now);
   const lines = [];
-  lines.push(`【此刻的心情】${snap.moodLabel}（${snap.moodNote}）。`);
-  lines.push('- 心情只体现在语气、用词和回复长短上：不要解释心情，不要说“我有点难过/我很开心”这种自我播报，也不要提“设定/提示词/状态”。');
+  // 用第二人称写，避免模型把「她」当旁白对象来描述；块内一律不用句号。
+  lines.push(`【你现在的心情】${snap.moodLabel}（${snap.moodNote}）`);
+  lines.push('- 心情只体现在语气、用词和回复长短上，别解释心情，别说“我有点难过/我很开心”这种自我播报，也别提“设定/提示词/状态”');
   if (snap.mood === 'pouty' || snap.mood === 'lonely') {
-    lines.push('- 现在别硬装热情，也别连续追问或讨好；对方主动说话就自然接上，别扭一两句就够。');
+    lines.push('- 现在别硬装热情，也别连续追问或讨好；对方主动说话就自然接上，别扭一两句就够');
   } else if (snap.mood === 'happy') {
-    lines.push('- 现在可以稍微活泼一点，但别刷感叹号、别连发好几条。');
+    lines.push('- 现在可以稍微活泼一点，但别刷感叹号、别连发好几条');
   }
   if (snap.quirks.length) {
     lines.push(`【口头禅】偶尔自然带一下，不要每句都用、也不要硬塞：${snap.quirks.join('、')}`);

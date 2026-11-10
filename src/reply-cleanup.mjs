@@ -28,5 +28,10 @@ export function humanizeReplyText(input) {
   const spaces = String.fromCharCode(32);
   const three = spaces + spaces + spaces;
   while (text.includes(three)) text = text.split(three).join(spaces);
+  // 「禁止夹带句号」：人格卡（行为规则层）明确要求不用「。」，但模型很爱用，
+  // 且注入的近况/见闻本身带句号，模型会照抄。这里做确定性兜底：
+  // 句末/换行前的句号直接去掉，句中句号换成逗号（保留断句）。
+  text = text.replace(/。[ \t]*(?=\n|$)/g, '');
+  text = text.replace(/。/g, '，');
   return text.trim();
 }

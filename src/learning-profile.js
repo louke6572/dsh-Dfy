@@ -156,6 +156,31 @@ function readJsonLines(file) {
   }
 }
 
+/**
+ * 把学习结果压成「口语短句」：见闻/近况原本是完整书面语、句句带句号，
+ * 模型会直接照抄（2026-11-10 实测：回复里的「圆滚滚…犯迷糊…解压」就是从近况抄的），
+ * 于是人设里的「短句、不用句号」全被带偏。这里按句切开、只取前几小句、统一用分号连接。
+ */
+function chattyClauses(text, { clauses = 3, maxChars = 120 } = {}) {
+  const parts = String(text ?? '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/[。！!？?；;]/g, '|')
+    .replace(/\n+/g, '|')
+    .split('|')
+    .map((s) => s.replace(/[，,、\s]+$/, '').trim())
+    .filter(Boolean);
+  const picked = [];
+  let used = 0;
+  for (const part of parts) {
+    if (picked.length >= clauses || used >= maxChars) break;
+    const next = part.slice(0, Math.max(0, maxChars - used));
+    if (!next) continue;
+    picked.push(next);
+    used += next.length;
+  }
+  return picked.join('；');
+}
+
 /** 提示词块：她自己的见闻 + 自动近况。没学过东西时返回空串。 */
 export function learningPromptBlock() {
   const profile = readLearningProfile();
@@ -163,17 +188,21 @@ export function learningPromptBlock() {
   if (!profile.experiences.length && !persona) return '';
   const lines = [];
   if (profile.experiences.length) {
-    lines.push('【她最近自己看到的（她私下的生活，不是主人说的）】');
+    lines.push('【你最近自己刷到的（你自己的私下生活，不是主人说的）】');
     for (const item of profile.experiences.slice(-3)) {
       const label = PLATFORM_LABELS[item.platform] || item.platform;
-      lines.push(`- [${label}] ${String(item.text).slice(0, 120)}`);
+      const text = chattyClauses(item.text, { clauses: 1, maxChars: 60 });
+      if (text) lines.push(`- [${label}] ${text}`);
     }
-    lines.push('- 这些只是背景：不要主动汇报"我今天看了…"，也不要每条消息都提；被问起或话题自然相关时才说。');
-    lines.push('- 可以有自己的态度（喜欢/无感/嫌烦），但不要编造没看到的细节。');
+    lines.push('- 这些只是背景，别主动汇报「我今天看了…」，也别每条都提，被问起或聊到才说');
+    lines.push('- 可以有自己的态度（喜欢/无感/嫌烦），但别编没看到的细节');
   }
   if (persona) {
-    lines.push('【她最近的近况（自动更新）】');
-    lines.push(persona.slice(0, 400));
+    const short = chattyClauses(persona, { clauses: 3, maxChars: 120 });
+    if (short) {
+      lines.push('【你最近的状态（自动更新）】');
+      lines.push(short);
+    }
   }
   return lines.join('\n');
 }

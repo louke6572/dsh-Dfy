@@ -4870,6 +4870,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
       return;
     }
+    if (pathname === `${API_PREFIX}/astrbot/access-mode`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      const body = await readJsonBody(req);
+      try {
+        const managed = body.managed !== false;
+        saveQqConfig({ snowluma: { managed } });
+        pluginLog(`[astrbot] 接入方式 → ${managed ? '插件接管 SnowLuma' : '直连（不接管 SnowLuma）'}`);
+        json(res, 200, { ok: true, managed });
+      } catch (error) {
+        json(res, 400, { ok: false, error: String(error?.message ?? error) });
+      }
+      return;
+    }
     if (pathname === `${API_PREFIX}/astrbot/route-b`) {
       if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
       const body = await readJsonBody(req);

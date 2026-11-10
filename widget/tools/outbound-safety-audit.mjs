@@ -83,7 +83,7 @@ for (const fn of REDACT_REQUIRED) {
 }
 
 // ── 3) 承载模型输出的入口必须剥离 Markdown 图片 ────────────────────────
-const IMAGE_STRIP_REQUIRED = ['sendToQQ', 'sendBurstToQQ', 'sendGroupWithAt'];
+const IMAGE_STRIP_REQUIRED = ['sendToQQ', 'sendBurstToQQ', 'sendGroupWithAt', 'sendMessagesV2'];
 for (const fn of IMAGE_STRIP_REQUIRED) {
   const start = lines.findIndex((l) => new RegExp(`(?:async\\s+)?function\\s+${fn}\\s*\\(`).test(l));
   if (start < 0) continue;
@@ -109,6 +109,17 @@ for (const { file, label } of BYPASS_FILES) {
   const text = read(file);
   if (!text.includes('redactLocalPaths(')) fail(`[旁路脱敏缺失] ${label} 没有调用 redactLocalPaths()：模型输出直发外部聊天，可能带本机路径`);
   else ok(`${label} 已做本机路径脱敏`);
+}
+const HUMANIZE_FILES = [
+  { file: path.join(ROOT, 'backend', 'lib', 'douyin-im.js'), label: 'douyin-im（抖音回复）' },
+  { file: path.join(ROOT, 'backend', 'lib', 'dfy-raw-chat.js'), label: 'dfy-raw-chat（经 AstrBot 发 QQ）' },
+];
+for (const { file, label } of HUMANIZE_FILES) {
+  const text = read(file);
+  // 这些是模型输出直发外部聊天：必须过 humanize（表情标记/空行/客服腔），
+  // 否则 AstrBot / 抖音会把 [sticker:…] 或空行原样发出去。
+  if (!text.includes('humanizeReplyText(')) fail(`[旁路清洗缺失] ${label} 没有调用 humanizeReplyText()`);
+  else ok(`${label} 已过 humanizeReplyText`);
 }
 function walk(dir, out = []) {
   let entries = [];
@@ -181,6 +192,68 @@ ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
   for (const name of registered) {
     if (!whitelist.has(name)) fail(`[工具未进白名单] 插件注册了 "${name}" 但 qq-tool-restrict SAFE_EXACT 没有 → 运行时会被 guard 拦死`);
     else ok(`工具 ${name} 已在桥接白名单`);
+  }
+}
+
+// ── 7) 表情限额：所有发表情入口必须查同一份限额 ───────────────────────
+//     2026-11-10 事故：限额只在「自动补发」里查，sticker_send / [sticker:] / 抖音
+//     全部绕过；QQ 和抖音还各用一份 state.json，等于两边各算一份额度。
+{
+  const nekoSrc = read(path.join(ROOT, 'src', 'nekowhale-stickers.mjs'));
+  if (!/return\s*\{[^}]*canSend/.test(nekoSrc)) fail('[表情限额] nekowhale-stickers.mjs 没有导出 canSend');
+  else ok('nekowhale-stickers.mjs 导出 canSend');
+  if (!/return\s*\{[^}]*markSent/.test(nekoSrc)) fail('[表情限额] nekowhale-stickers.mjs 没有导出 markSent');
+  else ok('nekowhale-stickers.mjs 导出 markSent');
+  const afterReplyBody = /async function afterReply[\s\S]*?\n  \}/.exec(nekoSrc)?.[0] ?? '';
+  if (!/canSend\(/.test(afterReplyBody) || !/markSent\(/.test(afterReplyBody)) {
+    fail('[表情限额] afterReply 没有走 canSend/markSent（自动补发会绕过限额）');
+  } else ok('afterReply 走 canSend/markSent');
+
+  const refBody = /async function sendStickerRef[\s\S]*?\n  \}/.exec(src)?.[0] ?? '';
+  if (!refBody) fail('[表情限额] 找不到 sendStickerRef');
+  else if (!/canSend\(/.test(refBody) || !/markSent\(/.test(refBody)) {
+    fail('[表情限额] sendStickerRef（[sticker:] 兜底）没有走 canSend/markSent');
+  } else ok('sendStickerRef 走 canSend/markSent');
+
+  const stickerImageBody = /else if \(\/\^dshsticker:[\s\S]*?bytes = fs\.readFileSync\(found\);/.exec(src)?.[0] ?? '';
+  if (!stickerImageBody) fail('[表情限额] 找不到 sendMarkdownImage 的 dshsticker 分支');
+  else if (!/canSend\(/.test(stickerImageBody)) {
+    fail('[表情限额] sendMarkdownImage 发 dshsticker 前没有查 canSend（sticker_send 会绕过限额）');
+  } else ok('sticker_send 的图片发送走 canSend');
+
+  if (!/nekoStickers\.afterReply\(/.test(src)) fail('[表情限额] QQ 自动补发没有调用 afterReply');
+  else ok('QQ 自动补发走 afterReply');
+
+  const douyinSrc = read(path.join(ROOT, 'backend', 'lib', 'douyin-im.js'));
+  if (!/neko\.afterReply\(/.test(douyinSrc)) fail('[表情限额] 抖音补发没有调用 afterReply');
+  else ok('抖音补发走 afterReply');
+  if (!/'qq',\s*'state',\s*'nekowhale-cache'/.test(douyinSrc)) {
+    fail('[表情限额] 抖音没有和 QQ 共用 state 目录（额度会被分成两份）');
+  } else ok('抖音与 QQ 共用表情 state 目录');
+}
+
+// ── 8) 活人感开关：设置页写了必须有消费方 ──────────────────────────────
+//     2026-11-10 审计发现 humanize.cleanReply 只写不读（开关形同虚设），
+//     burstBrake 也只覆盖了 sendToQQ 一条路径。
+{
+  if (!/humanize\?\.cleanReply\s*!==\s*false/.test(src)) {
+    fail('[活人感] humanize.cleanReply 没有被消费（设置页开关会失效）');
+  } else ok('humanize.cleanReply 已被消费');
+  const douyinSrc = read(path.join(ROOT, 'backend', 'lib', 'douyin-im.js'));
+  if (!/cleanReply\s*!==\s*false/.test(douyinSrc)) {
+    fail('[活人感] 抖音没有消费 cleanReply（和 QQ 的开关会不一致）');
+  } else ok('抖音也消费 cleanReply');
+  const brakePaths = ['sendToQQ', 'sendBurstToQQ', 'sendMessagesV2'];
+  for (const fn of brakePaths) {
+    const start = lines.findIndex((l) => new RegExp(`(?:async\\s+)?function\\s+${fn}\\s*\\(`).test(l));
+    if (start < 0) continue;
+    let end = lines.length - 1;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^\s{0,4}(?:async\s+)?function\s+[A-Za-z_$]/.test(lines[i])) { end = i - 1; break; }
+    }
+    const body = lines.slice(start, end + 1).join('\n');
+    if (!/humanize\?\.burstBrake\s*!==\s*false/.test(body)) fail(`[活人感] ${fn} 没有消费 burstBrake（分段刹车只覆盖部分发送路径）`);
+    else ok(`${fn} 已消费 burstBrake`);
   }
 }
 

@@ -17,10 +17,25 @@ import { createTurnCollector, NodeApiClient, discoverDshLaunchToken } from '../.
 import { discoverDshBaseUrl, probeDshBaseUrl } from '../../src/dsh-port.js';
 import { effectiveQqConfigFile } from '../../src/config-locate.js';
 import { redactLocalPaths } from '../../src/redact-paths.mjs';
+import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
 import { STATE_DIR } from './paths.js';
 import { readUnified } from './store.js';
 
 const REPLY_TIMEOUT_MS = 180_000;
+
+// 和 QQ 桥接共用同一个「清洗客服腔/英文草稿」开关（设置页写在 QQ 配置的 humanize 段）。
+let cleanCache = { at: 0, value: true };
+function cleanClutterEnabled() {
+  const now = Date.now();
+  if (now - cleanCache.at < 3000) return cleanCache.value;
+  let value = true;
+  try {
+    const data = JSON.parse(fs.readFileSync(effectiveQqConfigFile(), 'utf8').replace(/^﻿/, ''));
+    value = data?.humanize?.cleanReply !== false;
+  } catch { /* 没配置就默认开 */ }
+  cleanCache = { at: now, value };
+  return value;
+}
 
 export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {}) {
   // 默认会话（无会话身份时的兜底，例如设置页自测）。有身份时按身份派生独立会话，
@@ -242,7 +257,10 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
     }
     const reply = await promise;
     // 这条回复会经 AstrBot 发往 QQ（公开场合）：与桥接收口同一层脱敏本机路径。
-    return redactLocalPaths(reply);
+    // AstrBot 收的是纯文本，发不了 Markdown 图片：把图片行剥掉，别让
+    // `![名字](dshsticker:…)` 原样打到 QQ 上（表情由 AstrBot 自己的插件负责）。
+    const cleaned = humanizeReplyText(reply, { cleanClutter: cleanClutterEnabled() }).replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+    return redactLocalPaths(cleaned).trim();
   }
 
   /** OpenAI 兼容解析：取最后一条用户消息的纯文本。 */

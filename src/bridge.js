@@ -9209,6 +9209,8 @@ async function main(options = {}) {
       if (stickerCfg.enabled === false) return;   // 默认开；面板里可关
       // 本轮回复里已经有表情插件（dsh-nekowhale-stickers）的 Markdown 图 → 自动配图让位，避免两张
       if (/!\[[^\]]*\]\([^)]+\)/.test(String(text ?? ''))) return;
+      // 模型自己写了 [sticker:名字]：sendToQQ 会按标记补发真图，这里别再自动补第二张
+      if (/\[sticker[:：]/.test(String(text ?? ''))) return;
       if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
       nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
       const result = await nekoStickers.afterReply({
@@ -9235,11 +9237,50 @@ async function main(options = {}) {
   const contextPrimed = new Map(); // key -> 注入时间
   let humanizeGateInstance = null;
   function humanizeGate() {
-    humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(STATE_DIR, '..', 'token-usage-daily.json'), log });
+    humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(SURFCORE_DIR, 'token-usage-daily.json'), log });
     return humanizeGateInstance;
   }
   // 成熟表情插件（dsh-nekowhale-stickers）返回的是 Markdown 图片行：
   // ![](http://127.0.0.1:<port>/s/<hash>.gif) 或本地文件路径。桥接把它转成 QQ 图片段发出。
+  //
+  // 另外：模型有时会自己写 `[sticker:委屈]` 这种「回复标记」（外部表情插件的约定），
+  // 桥接原来的发送链不认它，原样发到 QQ 就是一段乱码文字。这里统一剥出来，
+  // 能匹配到大肥鱼表情就补发一张真图；匹配不到就只删标记，绝不把标记当正文发出去。
+  const STICKER_MARK_RE = /\[sticker[:：]\s*([^\]\n]{1,40})\]/gi;
+  function takeStickerRefs(input) {
+    const refs = [];
+    const text = String(input ?? '').replace(STICKER_MARK_RE, (_match, ref) => {
+      const value = String(ref ?? '').trim();
+      if (value) refs.push(value);
+      return '';
+    });
+    return { text, refs };
+  }
+  async function sendStickerRef(key, ref) {
+    try {
+      if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
+      nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
+      const stickerCfg = loadConfig().stickers ?? {};
+      // enabled 只关「回复后自动补一张」；标记兜底是模型主动发的，只受间隔/每小时上限约束
+      if (!nekoStickers.canSend({ ...stickerCfg, enabled: true })) {
+        log(`[neko] 表情已达限额（最小间隔/每小时上限），「${ref}」不发`);
+        return;
+      }
+      const item = await nekoStickers.pick(ref, { minScore: 1 });
+      if (!item) {
+        log(`[neko] 标记「${ref}」没匹配到表情，只删标记`);
+        return;
+      }
+      const file = await nekoStickers.download(item);
+      await sendMarkdownImage(key, `file:///${String(file).replace(/\\/g, '/')}`);
+      nekoStickers.markSent();
+      nekoStickers.markRecent(item.id);
+      noteSendSuccess(key);
+      log(`[neko] 按标记补发表情：${item.name}（${ref}）`);
+    } catch (error) {
+      log(`[neko] 按标记发表情失败：${String(error?.message ?? error).slice(0, 120)}`);
+    }
+  }
   function splitMarkdownImages(input) {
     const images = [];
     const text = String(input ?? '').replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_match, url) => {
@@ -9254,6 +9295,7 @@ async function main(options = {}) {
     const [kind, id] = String(key ?? '').split(':');
     if (!['private', 'group'].includes(kind) || !/^\d{5,15}$/.test(String(id ?? ''))) throw new Error('未知会话');
     let bytes;
+    let stickerSent = false;
     if (/^https?:\/\//i.test(rawUrl)) {
       const url = new URL(rawUrl);
       if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)) throw new Error('只允许本机图片地址');
@@ -9265,6 +9307,14 @@ async function main(options = {}) {
       // 本机路径写进 Markdown —— 一旦降级成文字发出去就是隐私泄漏（2026-11 真实事故）。
       const name = decodeURIComponent(String(rawUrl).slice('dshsticker:'.length)).replace(/[\\/]/g, '');
       if (!name) throw new Error('表情引用为空');
+      // 与自动补发、[sticker:] 兜底、抖音共用同一份限额：模型主动发也算在「每小时最多」里
+      // enabled 只关自动补发，这里不挡主动发图
+      nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
+      const stickerCfg = loadConfig().stickers ?? {};
+      if (!nekoStickers.canSend({ ...stickerCfg, enabled: true })) {
+        log(`[neko] 表情已达限额（最小间隔/每小时上限），工具表情 ${name} 跳过`);
+        return;
+      }
       const candidates = [
         path.join(SURFCORE_DIR, 'nekowhale-cache', 'nekowhale', 'gif', name),
         path.join(STATE_DIR, 'nekowhale-cache', 'nekowhale', 'gif', name),
@@ -9275,6 +9325,7 @@ async function main(options = {}) {
       }
       if (!found) throw new Error(`表情文件不存在：${name}`);
       bytes = fs.readFileSync(found);
+      stickerSent = true;
     } else {
       const file = rawUrl.startsWith('file://') ? new URL(rawUrl).pathname.replace(/^\/([A-Za-z]:)/, '$1') : rawUrl;
       bytes = fs.readFileSync(file);
@@ -9284,12 +9335,15 @@ async function main(options = {}) {
     const segment = { type: 'image', data: { file: 'base64://' + bytes.toString('base64') } };
     if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), [segment]), SEND_TIMEOUT_MS, `QQ图片 ${key}`);
     else await withTimeout(bot.sendGroupMessage(Number(id), [segment]), SEND_TIMEOUT_MS, `QQ图片 ${key}`);
+    if (stickerSent) nekoStickers?.markSent();
     noteSendSuccess(key);
   }
 
   function sendToQQ(key, msg, opts = {}) {
     const burstStartedAt = Date.now();
-    msg = humanizeReplyText(msg);
+    const marked = takeStickerRefs(msg);
+    msg = humanizeReplyText(marked.text, { cleanClutter: cfg.humanize?.cleanReply !== false });
+    const stickerRef = marked.refs[0] || '';
     const markdown = splitMarkdownImages(msg);
     msg = markdown.text;
     const assertSendAllowed = captureSendGuard(key);
@@ -9335,6 +9389,9 @@ async function main(options = {}) {
           }
         }
       });
+    }
+    if (stickerRef) {
+      sendChain = sendChain.then(() => sendStickerRef(key, stickerRef));
     }
     // 返回「本批是否全部发送成功」。调用方（例如 B站动态同步）需要据此决定
     // 能不能把这条内容标记为已推送 —— 以前返回 void，发送失败也会被当成成功，
@@ -9528,9 +9585,12 @@ async function main(options = {}) {
     // 图片在文本之后按顺序补发。
     lastSendFailed.delete(key); // 清掉上一轮的失败残留（否则本轮成功也被判失败）
     const pendingImages = [];
+    const pendingStickerRefs = [];
     const cleaned = [];
     for (const raw of messages) {
-      const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(raw)));
+      const marked = takeStickerRefs(raw);
+      if (marked.refs.length) pendingStickerRefs.push(marked.refs[0]);
+      const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(marked.text), { cleanClutter: cfg.humanize?.cleanReply !== false }));
       // 群聊：文本再兜一层本机路径脱敏（图片已作为独立条目剥离，不会误伤）。
       const textPart = kind === 'group' ? redactLocalPaths(split.text) : split.text;
       if (textPart) cleaned.push(textPart);
@@ -9542,6 +9602,14 @@ async function main(options = {}) {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          // 分段刹车：分条发到一半对方又说话了，剩下的不发（与 sendToQQ 同一口径）
+          if (i > 0 && cfg.humanize?.burstBrake !== false) {
+            const cancelAt = burstCancelAt.get(key);
+            if (cancelAt && cancelAt > burstStartedAt) {
+              log(`[humanize] 对方又说话了，剩余分段不发 (${key})`);
+              return;
+            }
+          }
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
@@ -9573,6 +9641,9 @@ async function main(options = {}) {
           }
         }
       });
+    }
+    if (pendingStickerRefs.length) {
+      sendChain = sendChain.then(() => sendStickerRef(key, pendingStickerRefs[0]));
     }
     return sendChain.then(() => sent);
   }
@@ -10193,19 +10264,36 @@ async function main(options = {}) {
 
   function sendMessagesV2(key, messages, delays, replyToMessageId, atUserId = null) {
     const assertSendAllowed = captureSendGuard(key);
+    const burstStartedAt = Date.now();
     const [kind, id] = key.split(':');
     const sent = [];
     const failed = [];
+    const stickerRefs = [];
+    const images = [];
     for (let i = 0; i < messages.length; i++) {
       // 工具直发路径同样要过 humanize（以前只有 sendToQQ / sendBurstToQQ 过）：
       // 去掉客服腔、句末句号，避免二代工具发送绕过人格卡的「不用句号」规则。
-      const msg = humanizeReplyText(messages[i]);
-      if (!msg) continue; // 清洗后为空（整条都是客服套话）就不发空消息
+      const marked = takeStickerRefs(messages[i]);
+      if (marked.refs.length) stickerRefs.push(marked.refs[0]);
+      // 工具回复里也可能带 sticker_send 的 Markdown 图片行。这里以前直接当文字发，
+      // 会把 `![名字](dshsticker:…)` 原样打到 QQ 上；顺手抽出来，文本发完后补图。
+      const split = splitMarkdownImages(humanizeReplyText(marked.text, { cleanClutter: cfg.humanize?.cleanReply !== false }));
+      if (split.images.length) images.push(...split.images);
+      const msg = split.text;
+      if (!msg) continue; // 清洗后为空（整条都是客服套话，或纯表情）就不发空消息
       const useReply = i === 0 ? replyToMessageId : null;
       const useAt = i === 0 ? atUserId : null;
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          // 分段刹车：分条发到一半对方又说话了，剩下的不发（和 sendToQQ / sendBurstToQQ 同一口径）
+          if (i > 0 && cfg.humanize?.burstBrake !== false) {
+            const cancelAt = burstCancelAt.get(key);
+            if (cancelAt && cancelAt > burstStartedAt) {
+              log(`[humanize] 对方又说话了，剩余分段不发 (${key})`);
+              return;
+            }
+          }
           await onebotSend(kind, id, msg, useReply, useAt);
           sent.push(msg);
         })
@@ -10217,6 +10305,23 @@ async function main(options = {}) {
         const d = delays[i];
         sendChain = sendChain.then(() => sleep(d));
       }
+    }
+    if (images.length) {
+      sendChain = sendChain.then(async () => {
+        for (const image of images) {
+          try {
+            await sendMarkdownImage(key, image);
+            noteSendSuccess(key);
+          } catch (error) {
+            // 图片失败只记日志，不算整条工具发送失败：文本已经发出去了，
+            // 抛错会让调用方重试整批，造成重复文字。
+            log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
+          }
+        }
+      });
+    }
+    if (stickerRefs.length) {
+      sendChain = sendChain.then(() => sendStickerRef(key, stickerRefs[0]));
     }
     return sendChain.then(() => {
       if (failed.length > 0) {
@@ -12829,7 +12934,7 @@ async function main(options = {}) {
     const imageParts = Array.isArray(opts.media) && opts.media.length > 0 ? await resolveMediaList(opts.media) : [];
     const seeMemeBlock = await seeMemeForTurn(promptText, imageParts);
     // 梗百科：只扫这段提示的最后几十行，命中才注入那一条词条（内置词库，不联网）
-    const memeWikiBlock = memeWikiPromptBlock(promptText);
+    const memeWikiBlock = memeWikiPromptBlock(promptText, { key });
     if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
     const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
     const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));
@@ -13259,7 +13364,7 @@ async function main(options = {}) {
     });
     // 合规硬规则已烘焙进三个 preset 的 persona 前缀（【…安全规则（最高优先级）】段），
     // 这里不再重复注入。
-    const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的事用 memory_remember 记下；想不起过去的事先用 memory_search 搜——搜不到就说记不清，不要编。';
+    const toolHint = '【可用工具】表情：要发表情时用 sticker_search 搜、sticker_send 取图，把它返回的 Markdown 图片行原样放进回复（桥接会转成 QQ 图片）；不要自己写 [sticker:名字] / [表情:名字] 这类标记，聊天端不认，会当普通文字发出去。不要把 qq_send_sticker / qq_list_stickers 当发表情的手段（聊天模式没有会话令牌，会被拒绝）。长期记忆：重要的事用 memory_remember 记下；想不起过去的事先用 memory_search 搜——搜不到就说记不清，不要编。';
     return [legacyRole, adminBlock, biliBrief, memoryBlock, crossDigest, toolHint].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
@@ -13360,7 +13465,8 @@ async function main(options = {}) {
     const [kind, id] = key.split(':');
     if (kind !== 'group') return sendToQQ(key, text);
     // 主动搭话里也可能带表情包（Markdown 图片行）：先拆出来，文字随 @ 发，图片补发。
-    const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(String(text ?? ''))));
+    const marked = takeStickerRefs(String(text ?? ''));
+    const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(marked.text), { cleanClutter: cfg.humanize?.cleanReply !== false }));
     // 群聊公开场合：正文再兜一层本机路径脱敏。
     const bodyText = redactLocalPaths(split.text);
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -13392,6 +13498,7 @@ async function main(options = {}) {
         log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
       }
     }
+    if (marked.refs[0]) await sendStickerRef(key, marked.refs[0]);
     return { ok: true };
   }
 
@@ -15915,7 +16022,7 @@ async function main(options = {}) {
     const imageParts = Array.isArray(mediaList) && mediaList.length > 0 ? await resolveMediaList(mediaList) : [];
     const seeMemeBlock = await seeMemeForTurn(promptText, imageParts);
     // 梗百科：只扫这段提示的最后几十行，命中才注入那一条词条（内置词库，不联网）
-    const memeWikiBlock = memeWikiPromptBlock(promptText);
+    const memeWikiBlock = memeWikiPromptBlock(promptText, { key });
     if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
     const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
     const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));

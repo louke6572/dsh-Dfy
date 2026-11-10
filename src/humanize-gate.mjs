@@ -15,6 +15,9 @@ const PROFILES = {
   loud: { yesScore: 3, noScore: 1, replyProb: 0.5, halfUsd: 0.9, floor: 0.2, baseSec: 1.5 },
 };
 
+// 插件写的用量是人民币；halfUsd 是美元阈值。只用于「花得越多越不想说话」的软启发式。
+const CNY_PER_USD = 7.2;
+
 const UNFINISHED_TAIL = ['然后', '那个', '就是', '但是', '所以', '还有', '对了', '等我', '我跟你讲', '你知道', '等一下', '其实'];
 const ASK_FOR_WAIT = ['稍等', '等我一下', '我还没说完', '别急', '还有一条', '马上说完'];
 
@@ -46,7 +49,10 @@ export function createHumanizeGate({ tokenUsageFile = null, log = () => {} } = {
     try {
       const data = readJson(tokenUsageFile);
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-      if (data && data.day === today) cost = Number(data?.qq?.cost) || 0;
+      // token-usage-daily.json 的 cost 是人民币（model-prices 的 currency=CNY），
+      // 而配置里的 halfUsd 按美元写。这里换成美元再比，否则阈值会差 7 倍左右、
+      // 花几毛钱就把接话意愿打到地板。汇率只影响软阈值的偏移，不参与计费。
+      if (data && data.day === today) cost = (Number(data?.qq?.cost) || 0) / CNY_PER_USD;
     } catch { /* 读不到就当 0 */ }
     cachedUsage = { at: now, cost };
     return cost;

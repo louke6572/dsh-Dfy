@@ -125,6 +125,10 @@ let db = null;
 let dbFile = '';
 let dbTried = false;
 const rowCache = new Map();
+// 同一个会话里同一个梗 10 分钟内只注入一次：prompt 里常带着最近几轮历史，
+// 不做去重的话上一轮的「XX 是什么梗」会在后面的每一轮反复命中、白烧 token。
+const lastHitByKey = new Map();
+const DEDUPE_MS = 10 * 60_000;
 
 function 开词库() {
   if (dbTried) return db;
@@ -201,14 +205,22 @@ function 词条文本(row, maxChars) {
  * 给这一轮拼一段梗百科。没命中、开关关了、词库没有，都返回空串。
  * 可以在长提示里调用：内部只扫最后 60 行。
  */
-export function memeWikiPromptBlock(text) {
+export function memeWikiPromptBlock(text, { key = '' } = {}) {
   try {
     const cfg = memeWikiConfig();
     if (!cfg.enabled) return '';
     const hit = extractMemeQuery(text);
     if (!hit) return '';
+    if (key) {
+      const last = lastHitByKey.get(key);
+      if (last && last.query === hit.query && Date.now() - last.at < DEDUPE_MS) return '';
+    }
     const row = 查词库(hit.query);
     if (!row) return '';
+    if (key) {
+      if (lastHitByKey.size > 200) lastHitByKey.clear();
+      lastHitByKey.set(key, { query: hit.query, at: Date.now() });
+    }
     return 词条文本(row, cfg.maxChars);
   } catch { return ''; }
 }
@@ -229,4 +241,5 @@ export function resetMemeWikiCache() {
   configCache = null;
   configAt = 0;
   rowCache.clear();
+  lastHitByKey.clear();
 }

@@ -189,24 +189,63 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
     return { ok: true, id: item.id, name: item.name, emotion: item.emotion || '' };
   }
 
+  function limitsOf(config) {
+    const cfg = config ?? {};
+    return {
+      enabled: cfg.enabled !== false,
+      minGap: Math.max(0, Number(cfg.minGapSec ?? 60)) * 1000,
+      maxPerHour: Math.max(1, Number(cfg.maxPerHour ?? 6)),
+      excludeEmotions: Array.isArray(cfg.excludeEmotions) ? cfg.excludeEmotions : [],
+      minScore: Number(cfg.minScore ?? 2),
+    };
+  }
+
+  function recentSentAt(now) {
+    return loadState().sentAt.filter((t) => now - t < 3600_000);
+  }
+
+  /**
+   * 还能不能再发一张。所有发表情的地方（自动补发、模型主动 sticker_send、
+   * [sticker:名字] 兜底、抖音补发）都查这一份 state，设置里的「最小间隔 / 每小时最多」
+   * 才是真的总量上限，而不是每条链路各算各的。
+   */
+  function canSend(config, now = Date.now()) {
+    const { enabled, minGap, maxPerHour } = limitsOf(config);
+    if (!enabled) return false;
+    const sentAt = recentSentAt(now);
+    if (!sentAt.length) return true;
+    if (now - sentAt[sentAt.length - 1] < minGap) return false;
+    return sentAt.length < maxPerHour;
+  }
+
+  /** 真正发出去之后记账。 */
+  function markSent(now = Date.now()) {
+    const state = loadState();
+    state.sentAt = [...recentSentAt(now), now].slice(-50);
+    saveState(state);
+  }
+
+  /** 记下最近发过的图，自动挑图时尽量不重复。 */
+  function markRecent(id) {
+    if (!id) return;
+    const state = loadState();
+    state.recent = [id, ...state.recent.filter((one) => one !== id)].slice(0, 30);
+    saveState(state);
+  }
+
   /** 回复后自动补一张（受配置的开关/间隔/排除情绪约束）。 */
   async function afterReply({ key, text, httpUrl, token, config = {}, now = Date.now(), transport = null }) {
-    const cfg = config ?? {};
-    if (cfg.enabled === false) return null;   // 默认开；面板关掉才不发
-    const minGap = Math.max(0, Number(cfg.minGapSec ?? 60)) * 1000;
-    const maxPerHour = Math.max(1, Number(cfg.maxPerHour ?? 6));
-    const state = loadState();
-    const sentAt = state.sentAt.filter((t) => now - t < 3600_000);
-    if (sentAt.length && now - sentAt[sentAt.length - 1] < minGap) return null;
-    if (sentAt.length >= maxPerHour) return null;
-    const item = await pick(text, { excludeEmotions: Array.isArray(cfg.excludeEmotions) ? cfg.excludeEmotions : [], minScore: Number(cfg.minScore ?? 2) });
+    const cfg = limitsOf(config);
+    if (!cfg.enabled) return null;   // 默认开；面板关掉才不发
+    if (!canSend(config, now)) return null;
+    const item = await pick(text, { excludeEmotions: cfg.excludeEmotions, minScore: cfg.minScore });
     if (!item) return null;
     // transport：别的平台（抖音）自己发图；没给就走 SnowLuma（QQ）
     const result = transport ? await transport(item) : await send({ httpUrl, token, key, item });
-    state.sentAt = [...sentAt, now].slice(-50);
-    saveState(state);
+    markSent(now);
+    markRecent(item.id);
     return result;
   }
 
-  return { loadKit, pick, download, send, afterReply };
+  return { loadKit, pick, download, send, afterReply, canSend, markSent, markRecent };
 }

@@ -191,6 +191,9 @@ const SAFE_EXACT = new Set([
   // addManualMemory 脱敏管线写卡。把记忆从「常驻注入」改为「模型按需检索」。
   'memory_search',
   'memory_remember',
+  // 梗百科（dsh-memewiki 插件 / 内置 src/meme-wiki.js 同一份词库）：只读本地 SQLite，
+  // 不联网、不写文件。放行后模型可以在没被预查闸门命中时自己补查一次。
+  'search_meme_wiki',
 ])
 
 // 给「插件兼容性体检」读取的只读快照：不要在别处再抄一份白名单。

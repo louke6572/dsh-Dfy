@@ -46,14 +46,18 @@ function memoryRecordMode() {
 
 function nekoStickerConfig() {
   try {
-    const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
+    const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+    const file = path.join(dshHome, 'surfcore', 'qq', 'config.json');
     const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
     return data?.stickers && typeof data.stickers === 'object' ? data.stickers : {};
   } catch { return {}; }
 }
 let nekoSingleton = null;
 function nekoInstance() {
-  const dir = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'nekowhale-cache');
+  const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  // 和 QQ 桥接共用同一份表情缓存与 state.json：设置里的「最小间隔 / 每小时最多」
+  // 才会同时约束 QQ 和抖音，而不是两个平台各算一份额度。
+  const dir = path.join(dshHome, 'surfcore', 'qq', 'state', 'nekowhale-cache');
   nekoSingleton ||= createNekoStickers({ dir, log: (message) => log(`[neko] ${String(message).slice(0, 160)}`) });
   return nekoSingleton;
 }
@@ -1138,7 +1142,7 @@ async function flushBatch({ conversation, batch }) {
   const memoryRecallBlock = (() => { try { return createMemoryRecall({ cardFile: activeMemoryPaths().json }).promptBlock(batch.map((item) => item.text).join(' '), { platform: conversation.isGroup ? 'bili' : 'qq' }); } catch { return ''; } })();
   const mcpToolHint = '【可用工具】长期记忆：memory_remember 记重要的事、memory_search 检索过去（不要编造记不清的事）。表情：工具里有 sticker_search / sticker_send 时按需用。';
   // 梗百科：群里冒出生梗时先把那一条词条查好，别让模型硬猜（内置词库，不联网）
-  const memeWikiBlock = memeWikiPromptBlock(lines);
+  const memeWikiBlock = memeWikiPromptBlock(lines, { key: conversation.key });
   if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
   // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
   // 每轮都注入，不只首轮：老会话（人格烘焙之前创建）的 system prompt 里没有任何人格，
@@ -1166,6 +1170,7 @@ async function flushBatch({ conversation, batch }) {
     '- 不知道的事就说不知道，不要编造没见过的经历、人设背景或现实里没发生的事；',
     '- 看到「发来一条语音消息」说明语音内容你听不了，就自然地让对方打字再说一遍，别假装听到了；',
     '- 不要 Markdown，不要旁白，不要解释自己在做什么，不要输出表情 id 或任何系统标记。',
+    '- 不要写 [sticker:名字] / [表情:名字] 这类标记，聊天端不认，会当成普通文字发出去。',
     '',
     lines,
   ].filter((line) => line !== undefined && line !== null && line !== '').join('\n');
@@ -1220,10 +1225,24 @@ async function flushBatch({ conversation, batch }) {
   }
 }
 
+let humanizeCache = { at: 0, value: null };
+function qqHumanizeConfig() {
+  const now = Date.now();
+  if (humanizeCache.value && now - humanizeCache.at < 3000) return humanizeCache.value;
+  let value = {};
+  try {
+    const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+    const data = JSON.parse(fs.readFileSync(path.join(dshHome, 'surfcore', 'qq', 'config.json'), 'utf8').replace(/^﻿/, ''));
+    if (data?.humanize && typeof data.humanize === 'object') value = data.humanize;
+  } catch { /* 没配置就按默认（清洗开） */ }
+  humanizeCache = { at: now, value };
+  return value;
+}
+
 /** 抖音 IM 对长消息不友好：压成一段、去掉 Markdown、截到 200 字。 */
 function normalizeOutgoing(input) {
   // 抖音是公开场合：模型输出直发前先脱敏本机路径（与 QQ 出站收口同一层）。
-  let text = redactLocalPaths(humanizeReplyText(input));
+  let text = redactLocalPaths(humanizeReplyText(input, { cleanClutter: qqHumanizeConfig().cleanReply !== false }));
   if (!text) return '';
   text = text
     .replace(/```[\s\S]*?```/g, ' ')

@@ -1520,7 +1520,7 @@ export function apply(ctx) {
       snowluma: {
         launcherPath: String(snow.launcherPath ?? ''),
         allowLaunch: snow.allowLaunch === true,
-        downloadUrl: String(snow.downloadUrl ?? 'https://github.com/SnowLuma/SnowLuma/releases/latest'),
+        downloadUrl: String(snow.downloadUrl ?? 'https://github.com/TomyJan/SnowLuma/releases/latest'),
         detected: findSnowLumaInstall().ok,
         everConnected: bridge?.snowluma?.everConnected === true,
         diagnosis: snowDiag,

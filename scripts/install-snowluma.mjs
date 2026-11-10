@@ -1,19 +1,25 @@
 // install-snowluma.mjs — 让 Agent 自动装 SnowLuma（第三方 QQ 运行时）
 //
 // 用法：
-//   node scripts/install-snowluma.mjs                 # 已有则复用；没有则下载官方 Releases 并解压
+//   node scripts/install-snowluma.mjs                 # 已有则复用；没有则从社区镜像下载 Releases 并解压
 //   node scripts/install-snowluma.mjs --dir D:\SnowLuma2
 //   node scripts/install-snowluma.mjs --no-launch     # 只装不启动
 //   node scripts/install-snowluma.mjs --force         # 忽略已安装，重新下载
 //
 // 行为：
 //   1. 先用 backend/lib/snowluma-install.js 的规则检测已安装（配置路径 / 常见目录）
-//   2. 没装：从 github.com/SnowLuma/SnowLuma/releases/latest 找到 Windows zip（官方 Releases）
+//   2. 没装：从 github.com/<repo>/releases/latest 找到 Windows zip（默认走社区镜像）
 //   3. 解压到目标目录（默认 %USERPROFILE%\SnowLuma2，路径不带中文/空格）
 //   4. 把 launcherPath / allowLaunch 写进仓库根 config.json
 //   5. 启动 launcher（默认；--no-launch 可跳过），剩下的只有「用户在窗口里扫码登录 QQ」
 //
-// 只下载官方 Releases，不碰第三方镜像；不修改任何用户数据。
+// ⚠️ 2026-11 起：SnowLuma 官方仓库 github.com/SnowLuma/SnowLuma 已被下线（HTTP 404），
+// 组织下只剩 .github。本脚本默认改用社区镜像 TomyJan/SnowLuma（内容与原版发行版一致，
+// 官方 npm 包 @snowluma/sdk|mcp 仍在更新）。可用环境变量覆盖：
+//   SNOWLUMA_REPO=owner/repo     换成别的镜像/分支
+//   SNOWLUMA_ZIP_URL=<zip 直链>  完全手动指定安装包（跳过版本探测）
+//
+// 只下载 Releases 资产；不修改任何用户数据。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,7 +41,13 @@ try {
     console.log(`[install-snowluma] 旧布局配置已复制到数据根：${CONFIG_FILE}（旧文件保持原样）`);
   }
 } catch { /* 迁移失败不阻断：下面的 readConfig 会走空配置 */ }
-const RELEASES_LATEST = 'https://github.com/SnowLuma/SnowLuma/releases/latest';
+const RELEASES_LATEST = process.env.SNOWLUMA_REPO
+  ? `https://github.com/${process.env.SNOWLUMA_REPO}/releases/latest`
+  : 'https://github.com/TomyJan/SnowLuma/releases/latest';
+// 仓库名单独留一份：resolveAsset 拼 expanded_assets / download 链接时要用。
+const SNOWLUMA_REPO = process.env.SNOWLUMA_REPO || 'TomyJan/SnowLuma';
+// 完全手动指定安装包：跳过版本探测，适合官方/镜像都不可达时用。
+const DIRECT_ZIP_URL = String(process.env.SNOWLUMA_ZIP_URL || '').trim();
 
 const argv = process.argv.slice(2);
 const argValue = (name) => {
@@ -51,7 +63,7 @@ const launch = !argv.includes('--no-launch');
 // 官方发布物只有 Windows zip，解压还依赖 PowerShell 的 Expand-Archive。
 // 在其它平台上直接说清楚，而不是让用户看到 zip/Expand-Archive 的费解报错。
 if (process.platform !== 'win32') {
-  console.error('[snowluma-install] ERROR: 本脚本只支持 Windows（SnowLuma 官方 Releases 只提供 Windows 包）。');
+  console.error('[snowluma-install] ERROR: 本脚本只支持 Windows（SnowLuma 发行版只提供 Windows 包）。');
   console.error('  macOS/Linux 请手动安装 SnowLuma，然后在设置页「安装与维护 → 手动选择」指定目录。');
   process.exit(2);
 }
@@ -141,27 +153,34 @@ if (!force) {
     startLauncher(found.launcher);
     process.exit(0);
   }
-  log('常见位置没有 SnowLuma，开始下载官方 Releases…');
+  log('常见位置没有 SnowLuma，开始从社区镜像下载 SnowLuma…');
 }
 
 // ── 2. 找最新版 Windows zip（用 releases 页面，避开 API 限流）────────────────
 async function resolveLatestTag() {
-  const res = await fetch(RELEASES_LATEST, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`打不开 Releases 页面（HTTP ${res.status}）`);
-  const m = res.url.match(/\/releases\/tag\/([^/?#]+)/);
-  if (!m) throw new Error(`无法从 ${res.url} 解析版本号`);
-  return decodeURIComponent(m[1]);
+  try {
+    const res = await fetch(RELEASES_LATEST, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`打不开 Releases 页面（HTTP ${res.status}）`);
+    const m = res.url.match(/\/releases\/tag\/([^/?#]+)/);
+    if (!m) throw new Error(`无法从 ${res.url} 解析版本号`);
+    return decodeURIComponent(m[1]);
+  } catch (error) {
+    fail(`拿不到 SnowLuma 发行版：${error?.message ?? error}\n`
+      + '  SnowLuma 官方仓库已在 2026-11 下线（github.com/SnowLuma/SnowLuma → 404）。\n'
+      + '  可选：① 换镜像：SNOWLUMA_REPO=owner/repo 再跑一次；\n'
+      + '        ② 手动下载 Windows zip 后：SNOWLUMA_ZIP_URL=<直链> 或设置页「安装与维护 → 手动选择」指定已解压目录。');
+  }
 }
 
 async function resolveAsset(tag) {
-  const page = `https://github.com/SnowLuma/SnowLuma/releases/expanded_assets/${encodeURIComponent(tag)}`;
+  const page = `https://github.com/${SNOWLUMA_REPO}/releases/expanded_assets/${encodeURIComponent(tag)}`;
   const res = await fetch(page, { redirect: 'follow' });
   const html = res.ok ? await res.text() : '';
   const hits = [...html.matchAll(/href="([^"]*\/releases\/download\/[^"]+\.zip)"/g)].map((m) => m[1]);
   const win = hits.find((u) => /win|windows/i.test(u)) || hits[0];
   if (win) return win.startsWith('http') ? win : `https://github.com${win}`;
   // 兜底：按官方命名规则拼
-  return `https://github.com/SnowLuma/SnowLuma/releases/download/${encodeURIComponent(tag)}/SnowLuma-win-x64.zip`;
+  return `https://github.com/${SNOWLUMA_REPO}/releases/download/${encodeURIComponent(tag)}/SnowLuma-win-x64.zip`;
 }
 
 async function download(url, dest) {
@@ -207,9 +226,16 @@ function flattenIfNested(dest) {
 }
 
 // ── 3. 下载 → 解压 → 校验 ────────────────────────────────────────────────────
-const tag = await resolveLatestTag();
-log(`最新版本：${tag}`);
-const assetUrl = await resolveAsset(tag);
+// 有 SNOWLUMA_ZIP_URL 就直接用（跳过版本探测）；否则按仓库解析最新 tag 与资产。
+let tag = 'manual';
+let assetUrl = DIRECT_ZIP_URL;
+if (!assetUrl) {
+  tag = await resolveLatestTag();
+  log(`最新版本：${tag}`);
+  assetUrl = await resolveAsset(tag);
+} else {
+  log(`使用手动指定的安装包：${assetUrl}`);
+}
 const tmpZip = path.join(os.tmpdir(), `snowluma-${tag}-${Date.now()}.zip`);
 
 try {

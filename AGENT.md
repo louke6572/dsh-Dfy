@@ -16,7 +16,9 @@
    `$DSH_HOME/surfcore/qq/`，不写插件包目录；也可以 clone 后跑 `node scripts/setup-dsh.mjs`（两种方式共用同一个数据目录）。
 2. **不要自己重启/关闭 DSH**：你可能就跑在 DSH 里，重启会中断当前任务；只让用户手动退出再打开。
 3. **不要替用户扫码**：二维码必须用户本人在 SnowLuma 窗口扫。
-4. SnowLuma 只从**官方 Releases** 下载（`github.com/SnowLuma/SnowLuma/releases/latest`），不要第三方镜像。
+4. SnowLuma 下载：官方仓库 `github.com/SnowLuma/SnowLuma` 已于 2026-11 下线（404），
+   安装脚本默认走社区镜像 `TomyJan/SnowLuma`；可用 `SNOWLUMA_REPO` / `SNOWLUMA_ZIP_URL` 覆盖。
+   下载后仍要用户本人扫码，不要替用户扫。
 5. 不要提交/外发 `config.json`、`~/.dsh/surfcore/`、`state/`、QQ/B站凭据。
 
 ## 零、最省事：让 DSH 自己装
@@ -95,7 +97,7 @@ curl -s -o NUL -w "%{http_code}" http://127.0.0.1:3080/dsh-whale/widget.js
 ```text
 dsh-Dfy 已安装。
 - 安装目录：<目录>
-- 版本：0.7.6
+- 版本：0.7.7
 - DSH profile：<profile>
 - SnowLuma：<已就绪 / 未安装>
 - QQ：<已登录（昵称/QQ号） / 等待扫码>

@@ -6074,6 +6074,8 @@ export default {
           let m
           let kept = 0
           while ((m = re.exec(attrs))) {
+            // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+            if (m[0].length === 0) break
             const name = String(m[1]).toLowerCase()
             const val = String(m[3] !== undefined ? m[3] : m[4])
             if (FRAME_SVG_ATTRS.indexOf(name) < 0) continue

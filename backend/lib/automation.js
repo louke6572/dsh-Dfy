@@ -15,8 +15,9 @@ import { usageToday } from '../tools/lib/free-gate.mjs'
 import { DEFAULT_LIMITS, freeLimits } from '../tools/lib/limits.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
 import { normalizeCardMode } from '../../src/share-mode.js'
+import { dayKey } from '../../src/day-key.mjs'
 
-const today = () => new Date().toLocaleDateString('sv-SE')
+const today = () => dayKey()
 
 function parseClock(label) {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(label ?? '').trim())

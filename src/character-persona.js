@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 export const CHARACTER_VERSION = 1;
 export const HOME = process.env.USERPROFILE || os.homedir();
@@ -70,15 +71,7 @@ function readJson(file, fallback = null) {
 }
 
 function atomicWriteJson(file, value) {
-  ensureDir(path.dirname(file));
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
+  writeFileAtomic(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
 function copyFile(src, dest) {
@@ -408,12 +401,12 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
   ensureDir(paths.biliDir);
   ensureDir(paths.snapshotsDir);
   const persona = String(personaText ?? '').trim() || defaultPersona(cleanName);
-  fs.writeFileSync(paths.persona, `${persona}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileAtomic(paths.persona, `${persona}\n`, { mode: 0o600 });
   if (memoryCard && typeof memoryCard === 'object') {
     atomicWriteJson(paths.memoryJson, memoryCard);
   }
   if (Array.isArray(fullRecords) && fullRecords.length) {
-    fs.writeFileSync(paths.memoryFullJsonl, `${fullRecords.map((record) => JSON.stringify(record)).join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileAtomic(paths.memoryFullJsonl, `${fullRecords.map((record) => JSON.stringify(record)).join('\n')}\n`, { mode: 0o600 });
   }
   const manifest = {
     version: CHARACTER_VERSION,
@@ -438,7 +431,7 @@ export function updateCharacter(id, { name, personaText, memoryCard, now = Date.
   const manifest = readManifest(id);
   if (!manifest) throw new Error(`角色不存在：${id}`);
   if (typeof personaText === 'string') {
-    fs.writeFileSync(paths.persona, `${personaText.trim()}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileAtomic(paths.persona, `${personaText.trim()}\n`, { mode: 0o600 });
   }
   if (memoryCard && typeof memoryCard === 'object') atomicWriteJson(paths.memoryJson, memoryCard);
   const next = {

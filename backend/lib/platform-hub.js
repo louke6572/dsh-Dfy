@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DSH_HOME, QQBOT_ROOT } from './paths.js';
-import { readUnified } from './store.js';
+import { readUnified, writeFileAtomic } from './store.js';
 import { isModuleEnabled } from './modules.js';
 
 const HUB_TTL = 5_000;
@@ -278,7 +278,7 @@ export function createPlatformHub({ selfName = 'dsh-dfy', log = () => {} } = {})
       if (!Array.isArray(bundles)) return false;
       if (!bundles.includes(pluginName)) bundles.push(pluginName);
       pkg.dsh.profile.bundles = bundles;
-      fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+      writeFileAtomic(file, `${JSON.stringify(pkg, null, 2)}\n`, { mode: 0o600 });
       return true;
     } catch (error) {
       log('[platform-hub] 写入 bundles 失败：', String(error?.message ?? error));

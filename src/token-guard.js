@@ -6,6 +6,7 @@
  *   · 本模块只判断“这一轮值不值得再花一次模型调用/再发一条”，
  *     不绕过鱼群守则；任何一边拒绝都不发。
  */
+import { dayStartMs } from './day-key.mjs';
 export const DEFAULT_TOKEN_GUARD = Object.freeze({
   enabled: true,
   maxWakesPerDay: 20,
@@ -35,11 +36,9 @@ export function localDayStart(now = Date.now()) {
  * @param {{key?:string, wakeTimes?:number[], now?:number, guard?:object, cost?:number, direct?:boolean}} opts
  * @returns {{blocked:boolean, error?:string, retryAfterMs?:number, reason?:string, dayCount?:number, maxDay?:number}}
  */
-/** 距本地时间「明天 00:00」还有多少毫秒（day 限额在新一天清零）。 */
+/** 距**北京时间**「明天 00:00」还有多少毫秒（day 限额在新一天清零）。 */
 export function msUntilNextLocalDay(now = Date.now()) {
-  const d = new Date(now);
-  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0);
-  return Math.max(1_000, next.getTime() - now);
+  return Math.max(1_000, dayStartMs(now) + 86_400_000 - now);
 }
 
 export function evaluateWakeBudget({ key = '', wakeTimes = [], now = Date.now(), guard = DEFAULT_TOKEN_GUARD, cost = null, direct = false } = {}) {

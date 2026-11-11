@@ -1,7 +1,7 @@
 /**
  * 目的机制（purpose outreach）—— 纯逻辑层。
  *
- * 模块边界：本文件零 import、零 I/O，未来可以原样抽成独立小插件；
+ * 模块边界：本文件除「今天」口径（day-key）外零 import、零 I/O，未来可以原样抽成独立小插件；
  * 当前按用户要求并入 SurfCore（副作用都在 src/bridge.js）。
  *
  * 2026-10-24 用户要求：小肥鱼要能「定期、稳定地主动找主人搭话」。
@@ -17,6 +17,7 @@
  *   · bridge.js 负责「什么时候可以说」「素材从哪来」「怎么投递」「发没发出去」；
  *   · 本文件负责「该不该轮到」「这次想做什么」「让她怎么说」。
  */
+import { dayKey } from './day-key.mjs';
 
 export const PURPOSE_STATE_VERSION = 1;
 
@@ -71,8 +72,7 @@ function redactNumbers(text) {
 }
 
 export function localDateKey(at = Date.now()) {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return dayKey(at);
 }
 
 function clockText(hh, mm) {

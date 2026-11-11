@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { TIEBA_DIR } from './paths.js';
+import { writeFileAtomic } from 'dsh-dfy-core/src/atomic-write.js';
 
 export const UA =
   'Mozilla/5.0 (Linux; Android 13; V2425A) AppleWebKit/537.36 '
@@ -50,8 +51,7 @@ export function setTiebaCookie(raw) {
     throw new Error(`这串看着不像 BDUSS（长度 ${value.length}）—— 请把 Cookie Value 原样粘贴，不要手工删改`);
   }
   fs.mkdirSync(TIEBA_DIR, { recursive: true });
-  fs.writeFileSync(tiebaCookieFile(), `BDUSS=${value}\n`, { mode: 0o600 });
-  try { fs.chmodSync(tiebaCookieFile(), 0o600); } catch {}
+  writeFileAtomic(tiebaCookieFile(), `BDUSS=${value}\n`, { mode: 0o600 });
   try { fs.unlinkSync(tiebaJarFile()); } catch { /* 没有就算了 */ }
   TBS = { value: '', at: 0 };
   jarSeeded = false;
@@ -89,8 +89,7 @@ function syncJar() {
     lines.push(`.baidu.com\tTRUE\t/\tFALSE\t4102444800\t${key}\t${rest.join('=')}`);
   }
   fs.mkdirSync(TIEBA_DIR, { recursive: true });
-  fs.writeFileSync(tiebaJarFile(), lines.join('\n') + '\n', { mode: 0o600 });
-  try { fs.chmodSync(tiebaJarFile(), 0o600); } catch {}
+  writeFileAtomic(tiebaJarFile(), lines.join('\n') + '\n', { mode: 0o600 });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -221,6 +220,8 @@ export function parseTiebaList(text) {
   const re = /<a[^>]+href="\/p\/(\d+)[^"]*"[^>]*>(.*?)<\/a>/gs;
   let match;
   while ((match = re.exec(text))) {
+    // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+    if (match[0].length === 0) break;
     const id = match[1];
     const title = decodeHtml(match[2]).replace(/\s+/g, ' ').trim();
     if (!title || seen.has(id)) continue;
@@ -244,6 +245,8 @@ export function parseTiebaThread(text) {
   const re = /<div class="([^"]*content[^"]*)"[^>]*>(.*?)<\/div>/gs;
   let match;
   while ((match = re.exec(text))) {
+    // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+    if (match[0].length === 0) break;
     if (match[1].includes('top_bar')) continue;
     const body = match[2];
     const textContent = decodeHtml(body).replace(/\s+/g, ' ').trim();
@@ -261,14 +264,23 @@ export function parseTiebaThread(text) {
     };
     const imgRe = /<img[^>]+(?:data-src|src)="([^"]+)"/g;
     let img;
-    while ((img = imgRe.exec(body))) pushImg(img[1]);
+    while ((img = imgRe.exec(body))) {
+      if (img[0].length === 0) break;
+      pushImg(img[1]);
+    }
     const lazyRe = /data-url=['"]([^'"]+)['"]/g;
-    while ((img = lazyRe.exec(body))) pushImg(img[1]);
+    while ((img = lazyRe.exec(body))) {
+      if (img[0].length === 0) break;
+      pushImg(img[1]);
+    }
   }
   const frRe = /<div class="fr_list[^"]*"[^>]*data-list-count="(\d+)"/g;
   const fr = [];
   let fm;
-  while ((fm = frRe.exec(text))) fr.push({ at: fm.index, n: Number(fm[1]) || 0 });
+  while ((fm = frRe.exec(text))) {
+    if (fm[0].length === 0) break;
+    fr.push({ at: fm.index, n: Number(fm[1]) || 0 });
+  }
   const hotFloors = [];
   for (let i = 0; i < floors.length; i += 1) {
     const from = floorAt[i];

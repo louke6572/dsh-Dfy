@@ -919,6 +919,7 @@ export class NodeApiClient extends AbstractApiClient {
     sig.addEventListener('abort', handleAbort, { once: true });
     if (sig.aborted) handleAbort();
     try {
+      // loop-allow: mux 消费队列；end 帧 / abort 时 return，空队列时等待 wake（不忙等）
       while (true) {
         while (inbox.length > 0) {
           const item = inbox.shift();

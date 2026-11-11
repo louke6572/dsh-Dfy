@@ -11,6 +11,7 @@ import path from 'node:path';
 import {
   buildBillingReport, renderCharacterBill, renderConversationBill, renderIndex,
 } from '../../src/billing-report.js';
+import { writeFileAtomic } from './store.js';
 
 function readText(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
@@ -34,10 +35,7 @@ function fileId(value) {
 }
 
 function writeAtomic(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, text, { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(tmp, file);
+  writeFileAtomic(file, text, { mode: 0o600 });
 }
 
 /**

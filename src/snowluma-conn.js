@@ -15,6 +15,7 @@
 // 这样换账号后无需手改任何配置，工具自动跟上。
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 /**
  * SnowLuma 主目录的常见位置。
@@ -137,8 +138,7 @@ export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/w
         try {
           const backup0 = `${account.file}.bak-astrbot`;
           if (!fs.existsSync(backup0)) fs.copyFileSync(account.file, backup0);
-          fs.writeFileSync(account.file, `${JSON.stringify(doc, null, 2)}
-`, 'utf8');
+          writeFileAtomic(account.file, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
         } catch (error) {
           result.files.push({ file: account.file, changed: false, error: String(error?.message ?? error) });
           continue;
@@ -160,7 +160,7 @@ export function ensureAstrbotWsClient({ cfg = null, url = 'ws://127.0.0.1:6199/w
       try {
         const backup = `${account.file}.bak-astrbot`;
         if (!fs.existsSync(backup)) fs.copyFileSync(account.file, backup);
-        fs.writeFileSync(account.file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+        writeFileAtomic(account.file, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
       } catch (error) {
         result.files.push({ file: account.file, changed: false, error: String(error?.message ?? error) });
         continue;
@@ -314,6 +314,6 @@ export function persistSnowLumaEndpoint(cfgPath, { accessToken, wsUrl, httpUrl }
   // —— 那是对用户文件的**字节级**静默改动（Windows 编辑器/工具常写 BOM），会让文件在 git 里
   // 显示成整文件重写，也可能影响按字节读它的其它程序。只改该改的字段，编码原样保留。
   const serialized = JSON.stringify(cfg, null, 2) + '\n';
-  fs.writeFileSync(cfgPath, hadBom ? `\uFEFF${serialized}` : serialized, 'utf8');
+  writeFileAtomic(cfgPath, hadBom ? `\uFEFF${serialized}` : serialized, { mode: 0o600 });
   return { updated: true, changed };
 }

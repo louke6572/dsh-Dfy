@@ -23,7 +23,13 @@ import { dynamicDefaults, normalizeDynamics } from '../tools/lib/kinds.mjs';
 import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../src/fish-guard.js';
 import { adminFromSources, normalizeAdmin } from '../../src/admin-identity.js';
 import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../src/memory-card.js?rev=20261025-pet-memory2';
+import { writeFileAtomic } from '../../src/atomic-write.js';
 import { normalizeCardMode } from '../../src/share-mode.js';
+import { MODULE_IDS } from '../../src/module-ids.js';
+
+// 原子写 helper 一并从这里转出：backend 侧只需认 store.js 一个入口，
+// 不必各自再 import 一遍 core 的深路径。
+export { writeFileAtomic, writeJsonFileAtomic } from '../../src/atomic-write.js';
 
 export const MASK = '********';
 
@@ -188,16 +194,8 @@ export const DEFAULT_UNIFIED = {
     failureThreshold: 3,
   },
   // 功能模块（设置栏位）启停：默认全开；停用后对应导航隐藏、接口返回 410。
-  modules: {
-    bili: true,
-    tieba: true,
-    douyin: true,
-    qq: true,
-    characters: true,
-    memory: true,
-    pet: true,
-    voice: true,
-  },
+  // 键集合来自 module-ids.js，避免这里和 modules.js 的注册表各写一份、新增模块时漏改。
+  modules: Object.fromEntries(MODULE_IDS.map((id) => [id, true])),
   ui: { activeTab: 'overview', showAdvanced: false },
   // 组件更新（2026-10-26）：只做 git 快进；`components` 里可以自己加 `{id,name,dir,branch}`。
   updates: {
@@ -282,16 +280,7 @@ export function readJson(file, fallback = null) {
 
 export function writeTextAtomic(file, text, { mode = 0o600 } = {}) {
   ensureDirs();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmp, text, { encoding: 'utf8', mode });
-    try { fs.chmodSync(tmp, mode); } catch {}
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
+  writeFileAtomic(file, text, { mode });
 }
 
 export function writeJsonAtomic(file, value, options) {
@@ -752,10 +741,10 @@ function normalizeUnified(config) {
     failureThreshold: clamp(capRaw.failureThreshold, 1, 10, 3),
   };
   // 模块启停：只收已知模块 id，未知键直接丢弃（防止设置页写进垃圾键）。
+  // 清单来自 module-ids.js（与 modules.js 的注册表同一份），新增模块不会因为漏改这里被裁掉。
   const modulesRaw = isPlainObject(next.modules) ? next.modules : {};
   next.modules = Object.fromEntries(
-    ['bili', 'tieba', 'douyin', 'qq', 'characters', 'memory', 'pet', 'voice']
-      .map((id) => [id, boolOr(modulesRaw[id], true)]),
+    MODULE_IDS.map((id) => [id, boolOr(modulesRaw[id], true)]),
   );
   return next;
 }

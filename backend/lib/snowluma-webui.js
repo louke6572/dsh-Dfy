@@ -82,7 +82,7 @@ export function createSnowLumaWebuiClient({ baseUrl, readConfig, saveConfig, log
       init.body = JSON.stringify(body);
     }
     let res;
-    try { res = await fetch(urlPath(pathname), init); }
+    try { res = await fetch(urlPath(pathname), { ...init, signal: init.signal ?? AbortSignal.timeout(12_000) }); }
     catch (error) {
       return { ok: false, code: 'WEBUI_UNREACHABLE', error: `SnowLuma 控制台不可达（是否已启动？）：${error?.message ?? error}` };
     }

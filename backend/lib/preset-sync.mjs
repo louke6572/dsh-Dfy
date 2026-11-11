@@ -18,6 +18,7 @@ import { buildPatches, patchFileFor, PRESETS, PERSONA_SNAPSHOT_FILE } from '../.
 import { composePersonaLayers } from '../../src/persona-layers.js';
 import { activePersonaFile, readCurrentCharacter, readPersonaLayerText } from '../../src/character-persona.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
+import { writeFileAtomic } from './store.js';
 
 /** 组装「烘进 system prompt 的稳定人格」。易变内容（近况/心情/记忆卡）不在这里。 */
 export function composePersonaSystemPrompt({ ownerName = '主人', maxChars = 12000 } = {}) {
@@ -89,7 +90,7 @@ export function syncPersonaSystemPreset({ log = () => {}, ownerName = '主人' }
     let prev = '';
     try { prev = fs.readFileSync(PERSONA_SNAPSHOT_FILE, 'utf8'); } catch { /* 首次同步 */ }
     if (prev === text) return { ok: true, changed: false };
-    fs.writeFileSync(PERSONA_SNAPSHOT_FILE, text, 'utf8');
+    writeFileAtomic(PERSONA_SNAPSHOT_FILE, text, { mode: 0o600 });
     buildPatches({ log: (line) => log(`[preset-sync] ${line}`) });
     log(`人格已同步到 Agent 预设（${name}，${text.length} 字）；重启 DSH 后对会话生效。`);
     return { ok: true, changed: true };

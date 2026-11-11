@@ -17,6 +17,7 @@ import {
   activeMemoryPaths, activePlatformStateDir,
 } from '../../src/character-persona.js';
 import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
+import { dayKey } from '../../src/day-key.mjs';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
@@ -65,8 +66,7 @@ export function memoryCardPaths() {
 }
 
 function todayKey(now = Date.now()) {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return dayKey(now);
 }
 
 function readBiliEntries() {
@@ -297,7 +297,7 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
     // 全量卡是 append-only JSONL，不做整份备份；每天备份很小的 stats 文件即可。
     try {
       const stat = fs.statSync(pathsNow().fullStats);
-      if (new Date(stat.mtimeMs).toLocaleDateString('sv-SE') !== todayKey(now)) {
+      if (dayKey(stat.mtimeMs) !== todayKey(now)) {
         backupFile(pathsNow().fullStats, 'memory-card-full-stats');
       }
     } catch {}
@@ -472,10 +472,16 @@ export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now
   });
 }
 
-/** B站调度器 / 调试用：读现成的 B站 注入块（mtime 缓存，避免每次重复读盘）。 */
+/** B站调度器 / 调试用：读现成的 B站 注入块（mtime 缓存，避免每次重复读盘）。
+ *
+ * 失败关闭：只有明确传 'qq' 才给「私聊/全量」那一份；其它任何值（漏传、拼错、新平台）
+ * 一律按 'bili'（公开场合、已排除桌宠与私聊流水）处理。以前是 `platform === 'bili'`
+ * 才走公开块、其余都给 QQ 全量 —— 将来某个平台调用时漏传/传错，就会把私聊记忆
+ * 注入到群聊提示词里（隐私泄漏），而代码看起来「正常工作」。
+ */
 export function memoryCardPromptBlock(platform = 'bili') {
   const paths = pathsNow();
-  const file = platform === 'bili' ? paths.promptBili : paths.promptQq;
+  const file = platform === 'qq' ? paths.promptQq : paths.promptBili;
   const cacheKey = `${platform}:${paths.dir}`;
   try {
     const stat = fs.statSync(file);

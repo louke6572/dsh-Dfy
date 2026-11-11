@@ -29,6 +29,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write.js';
+import { dayKey } from './day-key.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -198,8 +200,9 @@ export function resolveMemoryCardPaths(memoryDir) {
 }
 
 function todayKey(now = Date.now()) {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // 与额度 / 日报 / 贴吧 / 抖音共用同一个「今天」口径（北京时间），
+  // 不再用本机时区拼日期 —— 否则记忆衰减和额度账本会在非 UTC+8 的机器上错开一天。
+  return dayKey(now);
 }
 
 function iso(now = Date.now()) {
@@ -223,8 +226,7 @@ function short(text, max = 80) {
 function dateOnly(value) {
   const t = typeof value === 'number' ? value : Date.parse(String(value ?? ''));
   if (!Number.isFinite(t)) return '????-??-??';
-  const d = new Date(t);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return dayKey(t);
 }
 
 function asArray(value) {
@@ -1955,15 +1957,7 @@ export function saveMemoryCardOutputs(paths, card, config = {}, now = Date.now()
 }
 
 function writeTextAtomic(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmp, text, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
+  writeFileAtomic(file, text, { mode: 0o600 });
 }
 
 /**

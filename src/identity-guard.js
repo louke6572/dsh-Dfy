@@ -38,6 +38,8 @@ export function findIdentityLeaks(text, { ids = [] } = {}) {
   const explicit = /(?:QQ|qq|Q群|q群|群号|群\s*号|加群|企鹅号)\s*[：:=是为]?\s*(\d{5,12})/g;
   let match;
   while ((match = explicit.exec(raw)) !== null) {
+    // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+    if (match[0].length === 0) break;
     if (seen.has(`pattern:${match[1]}`)) continue;
     seen.add(`pattern:${match[1]}`);
     hits.push({ kind: 'qq-context', label: 'QQ/群号', value: match[1], index: match.index });

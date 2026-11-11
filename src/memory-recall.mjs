@@ -63,8 +63,10 @@ export function createMemoryRecall({ cardFile, log = () => {} } = {}) {
 
   /** 当前消息 → 相关记忆块；没有相关记录返回空串。
    *  platform：'bili' = 公开场合（群聊/抖音群/B站，排除桌宠与私聊流水）；
-   *            'qq' / 'pet' / 省略 = 私下场合（全量）。 */
-  function promptBlock(text, { limit = 3, maxChars = 520, platform = 'qq' } = {}) {
+   *            'qq' / 'pet' = 私下场合（全量）。
+   *  默认 'bili'（失败关闭）：漏传/拼错的平台只会拿到公开记忆，
+   *  不会因为一个参数忘了传就把私聊记忆注入群聊。 */
+  function promptBlock(text, { limit = 3, maxChars = 520, platform = 'bili' } = {}) {
     const tokens = tokensOf(text);
     if (!tokens.length) return '';
     const scored = [];

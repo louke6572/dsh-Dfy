@@ -428,6 +428,8 @@ export function detectCandidatesFromText({ platform, text, author = {}, source =
       pattern.re.lastIndex = 0;
       let match;
       while ((match = pattern.re.exec(raw)) !== null) {
+        // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+        if (match[0].length === 0) break;
         const value = String(match[1] ?? '').trim();
         if (!value) continue;
         if (!pattern.mid && /^(?:UID|uid|Id|id|ID|mid|MID|账号|帐号|号|名字|叫|是|为)$/.test(value)) continue;
@@ -460,6 +462,8 @@ export function detectCandidatesFromText({ platform, text, author = {}, source =
       pattern.re.lastIndex = 0;
       let match;
       while ((match = pattern.re.exec(raw)) !== null) {
+        // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+        if (match[0].length === 0) break;
         const value = String(match[1] ?? '').trim();
         if (!/^\d{5,12}$/.test(value)) continue;
         const identity = { id: authorId, name: authorName };

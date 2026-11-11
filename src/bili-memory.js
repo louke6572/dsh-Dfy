@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
 import { characterPersonaMeta, readCurrentCharacter } from './character-persona.js';
+import { dayKey } from './day-key.mjs';
 
 const BV_RE = /\bBV[0-9A-Za-z]{10}\b/;
 
@@ -72,7 +73,7 @@ function short(text, n) {
 function localDate(value) {
   const t = typeof value === 'number' ? value : Date.parse(String(value ?? ''));
   if (!Number.isFinite(t)) return '';
-  return new Date(t).toLocaleDateString('sv-SE');
+  return dayKey(t);
 }
 
 function dateStamp(iso) {
@@ -260,7 +261,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), log = () => {}
       try { return fs.readFileSync(path.join(paths.bili, 'whale-diary.md'), 'utf8'); } catch { return ''; }
     })();
     const fallbackDate = (() => {
-      try { return fs.statSync(path.join(paths.bili, 'whale-diary.md')).mtime.toLocaleDateString('sv-SE'); } catch { return new Date().toLocaleDateString('sv-SE'); }
+      try { return dayKey(fs.statSync(path.join(paths.bili, 'whale-diary.md')).mtimeMs); } catch { return dayKey(); }
     })();
 
     const scoresRaw = readJson(path.join(paths.bili, 'scores.json'), {}) ?? {};
@@ -786,7 +787,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), log = () => {}
     try { atomicWriteText(paths.history, JSON.stringify(data, null, 2) + '\n'); } catch {}
   }
 
-  function pickShareCard({ slotIndex = 0, dateKey = new Date().toLocaleDateString('sv-SE'), historyDays = 6, allowReuse = false } = {}) {
+  function pickShareCard({ slotIndex = 0, dateKey = dayKey(), historyDays = 6, allowReuse = false } = {}) {
     const index = readIndex();
     if (!index || !Array.isArray(index.entries)) return null;
     const hist = history();

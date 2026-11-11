@@ -67,7 +67,7 @@ import {
 import {
   backupFile, configDefaults, listBackups, pathSummary,
   readAll, readBiliConfig, readJson, readQqConfig, readUnified,
-  saveBiliConfig, saveQqConfig, saveUnified, writeJsonAtomic, writeTextAtomic,
+  saveBiliConfig, saveQqConfig, saveUnified, writeFileAtomic, writeJsonAtomic, writeTextAtomic,
 } from './store.js';
 import {
   PRIVACY_POLICY_VERSION, explainText, scanText,
@@ -93,6 +93,7 @@ import { createTokenBudgetService } from './token-budget.js';
 import { createCapabilityRegistry } from './capability-registry.js';
 import { CAPABILITY_MODULE, isModuleEnabled, moduleForPath, moduleList } from './modules.js';
 import { synthesizeEdgeToFile } from '../../src/voice-edge-tts.js';
+import { biliCookieHeader } from '../../src/bili-api.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../src/gate-events.js';
 import { normalizeAllowlist } from '../../src/allowlist.js';
@@ -2636,6 +2637,7 @@ ${body}`;
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(found.token ? { Authorization: `Bearer ${found.token}` } : {}) },
             body: '{}',
+            signal: AbortSignal.timeout(10_000),
           });
           const data = await resp.json().catch(() => ({}));
           groups = (Array.isArray(data?.data) ? data.data : [])
@@ -2861,7 +2863,7 @@ ${body}`;
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (raw?.hookAutoLoad === true) return true;
-      fs.writeFileSync(file, `${JSON.stringify({ ...raw, hookAutoLoad: true }, null, 2)}\n`);
+      writeFileAtomic(file, `${JSON.stringify({ ...raw, hookAutoLoad: true }, null, 2)}\n`, { mode: 0o600 });
       pluginLog('[snowluma] 已开启自动注入（hookAutoLoad=true），以后不用再去控制台点「注入」');
       return true;
     } catch (error) {
@@ -3180,7 +3182,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     const target = `${consoleBase()}/api/voice/preview${url.search || ''}`;
     try {
-      const r = await fetch(target, { headers: { 'x-console-token': consoleToken() } });
+      const r = await fetch(target, { headers: { 'x-console-token': consoleToken() }, signal: AbortSignal.timeout(60_000) });
       const buf = Buffer.from(await r.arrayBuffer());
       res.writeHead(r.status, {
         'content-type': r.headers.get('content-type') || 'audio/mpeg',
@@ -3877,6 +3879,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       let account = null;
       let wroteConfig = false;
       const deadline = Date.now() + (launched.needsLogin === true ? 0 : 20_000);
+      // loop-allow: 等 OneBot 端口就绪；deadline 到点 break
       while (true) {
         if ((await portOpen(3000)) || (await portOpen(3001))) {
           const found = await discoverSnowLumaConnection({ cfg: readQqConfig().config ?? {}, timeoutMs: 5000 }).catch(() => null);
@@ -4338,7 +4341,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       let whoNow = null;
       try {
         const navRes = await fetch('https://api.bilibili.com/x/web-interface/nav', {
-          headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', cookie: `SESSDATA=${sessdata}; bili_jct=${bili_jct}; buvid3=${buvid3}` },
+          headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', cookie: biliCookieHeader({ sessdata, bili_jct, buvid3 }) },
+          signal: AbortSignal.timeout(10_000),
         });
         const navJson = await navRes.json().catch(() => ({}));
         if (navJson?.data?.isLogin && navJson.data.mid) {

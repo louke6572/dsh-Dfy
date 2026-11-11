@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATE_DIR } from './paths.js';
+import { writeFileAtomic } from 'dsh-dfy-core/src/atomic-write.js';
 
 const TOKEN_DIR = path.join(STATE_DIR, 'astrbot');
 const RAW_TOKEN_FILE = path.join(TOKEN_DIR, 'raw-chat-token');
@@ -37,7 +38,7 @@ function ensureTokenFile(file) {
   const token = crypto.randomBytes(32).toString('base64url');
   try {
     fs.mkdirSync(TOKEN_DIR, { recursive: true });
-    fs.writeFileSync(file, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileAtomic(file, `${token}\n`, { mode: 0o600 });
   } catch {
     // 写不了盘就退回内存值：本次进程内仍可用，重启后重新生成（AstrBot 侧需重新写一次）。
   }

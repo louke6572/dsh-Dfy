@@ -193,7 +193,6 @@ export function findNodeExe() {
   const candidates = [
     process.env.DSH_NODE,
     path.join(DSH_HOME, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
-    path.join(HOME, '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
     'C:\\Program Files\\nodejs\\node.exe',
   ];
   for (const candidate of candidates) {

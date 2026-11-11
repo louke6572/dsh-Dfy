@@ -566,6 +566,9 @@ node widget/tools/check-dead-settings.mjs   # 「控件有值、没有消费方�
 node widget/tools/expr-smoke.mjs            # 表情包清单 / 图片路由 / 配置键冒烟
 node widget/tools/z-layer-audit.mjs         # 浮层层级（z-index）登记检查
 node widget/tools/outbound-safety-audit.mjs # 出站安全：发送收口 / 群聊路径脱敏 / 图片行剥离 / 表情引用 / 工具白名单对账
+node widget/tools/outbound-pipeline-audit.mjs # 出站管道回归：真实报过的每个问题各一条用例（换模型前后必跑）
+node widget/tools/divergence-audit.mjs        # 跨模块口径：数据目录 / 「今天」/ 出站清洗 / 配置路径只能有一个实现
+node widget/tools/module-audit.mjs            # 功能模块：状态原子写 / 网络超时 / 循环出口 / 记忆可见性 / 模块清单 / B站 Cookie 头
 node widget/tools/config-fuzz-audit.mjs     # 配置 normalize 模糊测试：毒值组合不抛错且幂等
 node widget/tools/token-guard-audit.mjs     # Token 防爆破守卫的边界与竞态不变式
 node widget/tools/live-endpoint-sweep.mjs   # 对运行中的服务做全端点真实巡检（需 DSH 在跑）

@@ -11,12 +11,15 @@ import path from 'node:path';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 export function resolveBiliPaths(home = os.homedir()) {
+  // DSH_HOME 优先：以前这里只认 homedir，DSH_HOME 被改过的安装会读不到凭据，
+  // 表现为「明明登录了 B站，插件一直说没凭据」。
+  const dshHome = process.env.DSH_HOME || path.join(home, '.dsh');
   return {
     home,
-    dsh: path.join(home, '.dsh'),
-    bili: path.join(home, '.dsh', 'surfcore', 'bili'),
-    config: path.join(home, '.dsh', 'surfcore', 'bili.config.json'),
-    credentials: path.join(home, '.dsh', 'surfcore', 'bili', 'credentials.json'),
+    dsh: dshHome,
+    bili: path.join(dshHome, 'surfcore', 'bili'),
+    config: path.join(dshHome, 'surfcore', 'bili.config.json'),
+    credentials: path.join(dshHome, 'surfcore', 'bili', 'credentials.json'),
   };
 }
 
@@ -31,6 +34,21 @@ function readJson(file, fallback = null) {
 }
 
 /**
+ * B站请求 Cookie 头的**唯一**拼装口径。
+ *
+ * 以前运行时有三处各拼一份（读写接口 / 扫码登录校验 / 设置页手填 SESSDATA 后的 nav 校验），
+ * 字段顺序、缺省项、空格还不完全一致。B站 一旦要求新字段（例如 buvid3 必带），
+ * 就得三处一起改，漏一处就表现为「明明登录了却说没凭据」。
+ */
+export function biliCookieHeader(cred = {}) {
+  return [
+    cred.sessdata ? `SESSDATA=${cred.sessdata}` : '',
+    cred.bili_jct ? `bili_jct=${cred.bili_jct}` : '',
+    cred.buvid3 ? `buvid3=${cred.buvid3}` : '',
+  ].filter(Boolean).join('; ');
+}
+
+/**
  * 读取 B 站账号配置与凭据。
  * 这里只读 bili.config.json 和 credentials.json，绝不触碰 dm-*.json。
  */
@@ -40,11 +58,7 @@ export function loadBiliAccount({ home = os.homedir() } = {}) {
   const cred = readJson(p.credentials, {}) ?? {};
   const mid = String(config?.self?.mid ?? '').trim();
   const name = String(config?.self?.name ?? '').trim();
-  const cookie = [
-    cred.sessdata ? `SESSDATA=${cred.sessdata}` : '',
-    cred.bili_jct ? `bili_jct=${cred.bili_jct}` : '',
-    cred.buvid3 ? `buvid3=${cred.buvid3}` : '',
-  ].filter(Boolean).join('; ');
+  const cookie = biliCookieHeader(cred);
   return {
     paths: p,
     config,

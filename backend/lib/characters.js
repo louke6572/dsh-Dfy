@@ -14,14 +14,14 @@ import {
   snapshotCharacter, switchCharacter, updateCharacter, archiveCharacter,
 } from '../../src/character-persona.js';
 import { scanText } from './privacy.js';
+import { dayKey } from '../../src/day-key.mjs';
 
 export const AUTO_AGE_DAYS = [180, 90, 60, 30, 15, 10, 7, 5, 3, 2, 1];
 export const BEFORE_SWITCH_SLOT = 'before-switch';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function daySlot(now = Date.now()) {
-  const d = new Date(now);
-  return `auto-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `auto-${dayKey(now)}`;
 }
 
 function ageOf(snapshot, now) {

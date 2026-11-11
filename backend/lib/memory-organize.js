@@ -17,6 +17,7 @@ import {
   applyMemoryCardAction, memoryCardConfig, memoryCardSnapshot,
 } from './memory-card.js';
 import { readUnified } from './store.js';
+import { dayKey } from '../../src/day-key.mjs';
 
 const MAX_INPUT = 400;
 const CHUNK_SIZE = 50; // 每次模型调用最多整理 50 条，选多了自动分批
@@ -131,7 +132,11 @@ function parseModelJson(text) {
       const segment = text.slice(arr + 1);
       const re = /"([^"\\]+)"/g;
       let match;
-      while ((match = re.exec(segment))) out.drop.push(match[1]);
+      while ((match = re.exec(segment))) {
+        // 零长度匹配会让 lastIndex 原地不动 → 死循环。
+        if (match[0].length === 0) break;
+        out.drop.push(match[1]);
+      }
       if (out.drop.length) found = true;
     }
   }
@@ -150,7 +155,7 @@ const DIARY_SYSTEM = [
 function localDateKey(value) {
   const date = new Date(value ?? 0);
   if (!Number.isFinite(date.getTime())) return '';
-  return date.toLocaleDateString('sv-SE');
+  return dayKey(date);
 }
 
 /**

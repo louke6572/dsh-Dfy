@@ -11,6 +11,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 const SITE = 'https://kiriyuki.com';
 const MANIFEST_URL = `${SITE}/api/kit/nekowhale`;
@@ -79,7 +80,7 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
     if (!manifest || !fresh(manifestFile)) {
       try {
         manifest = JSON.parse(await fetchText(MANIFEST_URL));
-        fs.writeFileSync(manifestFile, JSON.stringify(manifest), 'utf8');
+        writeFileAtomic(manifestFile, JSON.stringify(manifest), { mode: 0o600 });
       } catch (error) {
         if (!manifest) throw error;
         log(`[neko] 清单更新失败，用缓存：${error?.message ?? error}`);
@@ -88,7 +89,7 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
     if (!meta || !fresh(metaFile)) {
       try {
         meta = JSON.parse(await fetchText(META_URL));
-        fs.writeFileSync(metaFile, JSON.stringify(meta), 'utf8');
+        writeFileAtomic(metaFile, JSON.stringify(meta), { mode: 0o600 });
       } catch (error) {
         if (!meta) throw error;
         log(`[neko] 标注更新失败，用缓存：${error?.message ?? error}`);
@@ -118,7 +119,7 @@ export function createNekoStickers({ dir, log = () => {} } = {}) {
   }
 
   function saveState(st) {
-    try { fs.writeFileSync(stateFile, JSON.stringify({ ...st, updatedAt: new Date().toISOString() }), 'utf8'); } catch { /* ignore */ }
+    try { writeFileAtomic(stateFile, JSON.stringify({ ...st, updatedAt: new Date().toISOString() }), { mode: 0o600 }); } catch { /* ignore */ }
   }
 
   /** 按回复文本挑一张；返回 item 或 null。零模型调用。 */

@@ -186,7 +186,7 @@ async function waitJson(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
       if (res.ok) return res.json();
     } catch {}
     await sleep(250);
@@ -611,7 +611,7 @@ function destroySession(session) {
 async function confirmLogin(port) {
   let tab = null;
   try {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5_000) })).json();
     tab = Array.isArray(list)
       ? list.find((item) => item.type === 'page' && String(item.url ?? '').includes('tieba.baidu.com'))
       : null;
@@ -619,7 +619,7 @@ async function confirmLogin(port) {
 
   if (!tab?.webSocketDebuggerUrl) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/new?${TIEBA}/`, { method: 'PUT' });
+      const res = await fetch(`http://127.0.0.1:${port}/json/new?${TIEBA}/`, { method: 'PUT', signal: AbortSignal.timeout(5_000) });
       if (!res.ok) return { reachable: false };
       tab = await res.json();
     } catch {
@@ -680,7 +680,7 @@ async function readCookiesBestEffort(session) {
 
 /** 新开一个标签。 */
 async function newTab(port) {
-  const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' });
+  const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(5_000) });
   if (!res.ok) throw new Error(`浏览器新建标签失败（HTTP ${res.status}）`);
   const tab = await res.json();
   if (!tab?.webSocketDebuggerUrl) throw new Error('浏览器没有可用的标签页');

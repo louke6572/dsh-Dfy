@@ -10,6 +10,7 @@
  *
  * 所以拆出纯逻辑：什么时候该发（含补发/重试） + 让模型怎么发。桥接只负责定时器和投递。
  */
+import { dayKey } from './day-key.mjs';
 
 /** 错过时间点后还能补发的窗口：3 小时（08:00 的问候，11:00 前补发都算今天的）。 */
 export const GREETING_GRACE_MS = 3 * 60 * 60 * 1000;
@@ -17,10 +18,9 @@ export const GREETING_GRACE_MS = 3 * 60 * 60 * 1000;
 export const GREETING_RETRY_MS = 10 * 60 * 1000;
 /** 补发时不立刻抢跑，留 5 秒给 DSH 事件流。 */
 export const GREETING_CATCHUP_DELAY_MS = 5000;
-/** 跨天判定用本地日期（与日志里的本地时间一致）。 */
+/** 跨天判定用统一的北京时间日期（与额度 / 日报 / 记忆同一个口径）。 */
 export function localDateKey(at = Date.now()) {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return dayKey(at);
 }
 
 /** `"8:00"` / `"08:00"` → `{ hh, mm }`；非法值回退到 08:00。 */

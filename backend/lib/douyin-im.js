@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
 import { DOUYIN_DIR } from './douyin.js';
 import { readUnified } from './store.js';
 import { notePersonaActivity, personaPromptBlock } from '../../src/persona-state.js';
@@ -26,29 +26,52 @@ import { activeMemoryPaths, activePersonaFile, readCurrentCharacter } from '../.
 import { appendMemoryInboxEvent } from '../../src/memory-card.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
-import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
-import { redactLocalPaths } from '../../src/redact-paths.mjs';
+import { prepareReply, hasMarkdownImage } from '../../src/outbound-reply.mjs';
+import { dayKey as shanghaiDayKey } from '../../src/day-key.mjs';
 import { recentCrossPlatformDigest } from '../../src/cross-platform-digest.mjs';
 import { createMemoryRecall } from '../../src/memory-recall.mjs';
 import { memeWikiPromptBlock } from '../../src/meme-wiki.js';
 import { NodeApiClient, unwrap, discoverDshLaunchToken } from '../../src/dsh-client.js';
+import { createSeeMeme } from '../../src/see-meme.js';
+import { getQqRuntimeServices } from '../../src/qq-runtime-services.js';
+import { createHumanizeGate } from '../../src/humanize-gate.mjs';
+
+function dshHomeDir() {
+  return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+}
+
+/** 读 QQ 配置：表情、看图、记忆口径都跟 QQ 共用同一份设置。 */
+function qqConfig() {
+  try {
+    const file = path.join(dshHomeDir(), 'surfcore', 'qq', 'config.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    return data && typeof data === 'object' ? data : {};
+  } catch { return {}; }
+}
 
 // 大肥鱼表情包：和 QQ 共用 qq 配置的 stickers 段与同一份缓存/限流状态
 function memoryRecordMode() {
-  try {
-    const file = path.join(os.homedir(), '.dsh', 'surfcore', 'qq', 'config.json');
-    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-    return data?.memory?.recordMode === 'chatlog' ? 'chatlog' : 'facts';
-  } catch { return 'facts'; }
+  return qqConfig()?.memory?.recordMode === 'chatlog' ? 'chatlog' : 'facts';
 }
 
 function nekoStickerConfig() {
-  try {
-    const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-    const file = path.join(dshHome, 'surfcore', 'qq', 'config.json');
-    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
-    return data?.stickers && typeof data.stickers === 'object' ? data.stickers : {};
-  } catch { return {}; }
+  const stickers = qqConfig()?.stickers;
+  return stickers && typeof stickers === 'object' ? stickers : {};
+}
+
+// 活人感（攒一攒 / 群聊接话打分 / 按花费降低意愿）与 QQ 共用同一份设置，
+// 这样在「桌宠（对话）→ 活人感」里调档位时，抖音群聊不会还是另一套行为。
+let humanizeGate = null;
+function humanizeOf() {
+  humanizeGate ||= createHumanizeGate({
+    tokenUsageFile: path.join(dshHomeDir(), 'surfcore', 'token-usage-daily.json'),
+    log,
+  });
+  return humanizeGate;
+}
+function douyinHumanizeConfig() {
+  const value = qqConfig()?.humanize;
+  return value && typeof value === 'object' ? value : {};
 }
 let nekoSingleton = null;
 function nekoInstance() {
@@ -63,7 +86,7 @@ function nekoInstance() {
 async function maybeSendDouyinSticker(event, text) {
   const cfg = nekoStickerConfig();
   if (cfg.enabled === false) return;   // 默认开；面板里可关
-  if (/!\[[^\]]*\]\([^)]+\)/.test(String(text ?? ''))) return;   // 已用成熟表情插件发图则让位
+  if (hasMarkdownImage(text)) return;   // 已用成熟表情插件发图则让位（与 QQ 共用同一判定）
   try {
     const neko = nekoInstance();
     const sdk = await loadSdk();
@@ -80,6 +103,34 @@ async function maybeSendDouyinSticker(event, text) {
     if (result) log(`[neko] 抖音已补表情：${result?.name || ''}`);
   } catch (error) {
     log(`[neko] 抖音表情发送失败：${String(error?.message ?? error).slice(0, 160)}`);
+  }
+}
+
+/** 发送模型引用到的表情（sticker_send 返回的 dshsticker: 引用）。 */
+async function sendDouyinImages(event, rawUrls) {
+  if (!Array.isArray(rawUrls) || !rawUrls.length) return;
+  const sdk = await loadSdk();
+  const stickerCfg = nekoStickerConfig();
+  for (const raw of rawUrls.slice(0, 2)) {
+    if (!/^dshsticker:/i.test(String(raw))) continue;
+    try {
+      const name = decodeURIComponent(String(raw).slice('dshsticker:'.length)).replace(/[\\/]/g, '');
+      if (!name) continue;
+      const neko = nekoInstance();
+      if (!neko.canSend({ ...stickerCfg, enabled: true })) {
+        log(`[neko] 表情已达限额，「${name}」不发`);
+        continue;
+      }
+      const item = await neko.pick(name, { minScore: 1 });
+      if (!item) { log(`[neko] 引用「${name}」没匹配到表情`); continue; }
+      const file = await neko.download(item);
+      await event.reply(sdk.segment.image(fs.readFileSync(file)));
+      neko.markSent();
+      neko.markRecent(item.id);
+      log(`[neko] 抖音按引用发表情：${item.name}`);
+    } catch (error) {
+      log(`[neko] 抖音按引用发表情失败：${String(error?.message ?? error).slice(0, 120)}`);
+    }
   }
 }
 
@@ -127,6 +178,121 @@ function defaultMentionNames() {
   return ['大肥鱼'];
 }
 
+// ── 图片 / 表情：先看懂再交给模型 ──────────────────────────────────────────
+// 抖音的图片消息是加密的（AES-256-GCM，skey 在 content.image 里），SDK 只负责解析，
+// 不负责下载。以前 textOf() 对图片/表情返回空串，整条消息被静默丢掉 —— 表现就是
+// 「对方发图，机器人毫无反应」。这里下载 → 解密 → 交给 QQ 同一套看图引擎。
+const MEDIA_MAX_COUNT = 2;
+const MEDIA_MAX_BYTES = 6 * 1024 * 1024;
+const MEDIA_TIMEOUT_MS = 12_000;
+
+function pickDouyinImageUrl(image) {
+  for (const urls of [image?.originUrls, image?.largeUrls, image?.mediumUrls, image?.thumbUrls]) {
+    if (!Array.isArray(urls)) continue;
+    const hit = urls.find((url) => typeof url === 'string' && url);
+    if (hit) return hit;
+  }
+  return '';
+}
+
+function sniffImageMime(buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg';
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString() === 'RIFF' && buffer.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
+  if (buffer.length >= 6 && (buffer.subarray(0, 6).toString() === 'GIF87a' || buffer.subarray(0, 6).toString() === 'GIF89a')) return 'image/gif';
+  return '';
+}
+
+function decryptDouyinImage(buffer, skeyHex) {
+  const hex = String(skeyHex ?? '').trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(hex) || buffer.length < 28) return null;
+  const iv = buffer.subarray(0, 12);
+  const tag = buffer.subarray(buffer.length - 16);
+  const body = buffer.subarray(12, buffer.length - 16);
+  const decipher = createDecipheriv('aes-256-gcm', Buffer.from(hex, 'hex'), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(body), decipher.final()]);
+}
+
+/** 一条消息里值得看的图/表情（最多 2 个，视频取封面）。 */
+function mediaRefsOf(event) {
+  const content = event?.content;
+  if (!content || typeof content !== 'object') return [];
+  const refs = [];
+  if (content.kind === 'image' && content.image) refs.push({ label: '图片', image: content.image });
+  else if (content.kind === 'emoji' && content.url) refs.push({ label: '表情', url: String(content.url) });
+  else if (content.kind === 'video' && content.video?.poster) refs.push({ label: '视频封面', image: content.video.poster });
+  return refs.slice(0, MEDIA_MAX_COUNT);
+}
+
+async function downloadDouyinMedia(ref) {
+  const url = ref.image ? pickDouyinImageUrl(ref.image) : ref.url;
+  if (!url) return null;
+  const res = await fetch(url, {
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.douyin.com/' },
+    signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const raw = Buffer.from(await res.arrayBuffer());
+  if (!raw.length) return null;
+  if (raw.length > MEDIA_MAX_BYTES) { log(`${ref.label}超过大小上限，跳过`); return null; }
+  let data = raw;
+  if (ref.image) {
+    try {
+      const plain = decryptDouyinImage(raw, ref.image.skey);
+      if (plain?.length) data = plain;
+    } catch { /* 未加密或密钥不匹配：按原样用，交给下面的格式判断 */ }
+  }
+  const mediaType = sniffImageMime(data);
+  if (!mediaType) { log(`${ref.label}格式认不出，跳过`); return null; }
+  return { type: 'image', mediaType, data: data.toString('base64') };
+}
+
+async function collectDouyinMedia(batch) {
+  const refs = (Array.isArray(batch) ? batch : [])
+    .flatMap((item) => mediaRefsOf(item?.event))
+    .slice(0, MEDIA_MAX_COUNT);
+  if (!refs.length) return [];
+  const parts = [];
+  for (const ref of refs) {
+    try {
+      const part = await downloadDouyinMedia(ref);
+      if (part) parts.push(part);
+    } catch (error) {
+      log(`下载${ref.label}失败：${String(error?.message ?? error).slice(0, 120)}`);
+    }
+  }
+  return parts;
+}
+
+let seeMemeEngine = null;
+function seeMemeOf() {
+  const config = qqConfig()?.seeMeme ?? {};
+  if (config.enabled === false) return null;
+  if (seeMemeEngine) return seeMemeEngine;
+  try {
+    seeMemeEngine = createSeeMeme({
+      config,
+      // 和 QQ 共用缓存与额度：同一张图只花一次看图钱，群里刷屏也不会两边各算一份。
+      cacheFile: path.join(dshHomeDir(), 'surfcore', 'qq', 'state', 'see-meme-cache.json'),
+      log,
+      resolveModel: () => {
+        try {
+          const shared = JSON.parse(fs.readFileSync(path.join(dshHomeDir(), 'surfcore', 'config.json'), 'utf8').replace(/^\uFEFF/, ''))?.model;
+          if (shared?.provider && shared?.model) return shared;
+        } catch { /* 用 QQ 配置兜底 */ }
+        const qq = qqConfig();
+        return { provider: qq?.dsh?.provider, model: qq?.dsh?.model };
+      },
+      services: getQqRuntimeServices,
+    });
+  } catch (error) {
+    log(`[看图] 初始化失败：${String(error?.message ?? error).slice(0, 120)}`);
+    return null;
+  }
+  return seeMemeEngine;
+}
+
 function normalizeConfig(raw) {
   const value = raw && typeof raw === 'object' ? raw : {};
   return {
@@ -153,9 +319,8 @@ function saveConfig(next) {
   return value;
 }
 
-function dayKey() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-}
+// 「今天」用共享口径（北京时间），与额度 / 记账文件一致。
+const dayKey = shanghaiDayKey;
 function readState() {
   const state = readJson(STATE_FILE, {});
   if (state?.date !== dayKey()) return { date: dayKey(), replies: 0 };
@@ -264,7 +429,8 @@ const CONTROLLER_SIGNAL = new AbortController().signal;
 // 而 DSH 只认建会话时带的 workspaceId，所以侧栏里一直看不到抖音会话。
 
 const WORKSPACE_TITLE = '抖音聊天';
-const workspaceRegistryFile = () => path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+// DSH 的 storages 跟着 DSH_HOME 走；写死 ~/.dsh 时改过 DSH_HOME 的安装找不到工作区。
+const workspaceRegistryFile = () => path.join(dshHomeDir(), 'storages', 'workspace.json');
 let dshApiClient = null;
 let dshApiBase = '';
 let workspacePromise = null;
@@ -629,14 +795,27 @@ async function loadSdk() {
 // 人设/记忆/跨平台近况仍然只在每个抖音会话第一次（或 6 小时后）注入。
 const contextPrimed = new Map();
 
-/** 人格文件指纹（路径 + mtime + size）。 */
+/**
+ * 人格 / 预设指纹（路径 + mtime + size）。
+ * 除了人设文件，还要把 douyin-chat preset 算进去：回复语气规则（三档、禁「我能接住」）
+ * 就住在 preset 的 system prompt 里，只改预设不改人设时也必须换新会话，否则老会话
+ * 一直用旧 system prompt。
+ */
 function douyinPersonaFileKey() {
+  const parts = [];
   try {
     const file = String(activePersonaFile() || '');
-    if (!file) return '';
-    const stat = fs.statSync(file);
-    return `${file}:${stat.mtimeMs}:${stat.size}`;
-  } catch { return ''; }
+    if (file) {
+      const stat = fs.statSync(file);
+      parts.push(`${file}:${stat.mtimeMs}:${stat.size}`);
+    }
+  } catch { /* 人设读不到就只算预设 */ }
+  try {
+    const preset = new URL('../../presets/douyin-chat.patch.yml', import.meta.url);
+    const stat = fs.statSync(preset);
+    parts.push(`preset:${stat.mtimeMs}:${stat.size}`);
+  } catch { /* 预设还没生成（开发态）就算了 */ }
+  return parts.join('|');
 }
 
 /** 记忆卡注入块（四个平台同一张卡；关闭记忆卡时返回空）。 */
@@ -1048,6 +1227,20 @@ function textOf(event) {
   }
   const text = String(event?.text ?? '').trim();
   if (text) return text;
+  // 非文字消息以前一律返回空串，会被 handleMessage 当成「空消息」丢掉。
+  // 图片/表情现在由 collectDouyinMedia 交给看图模型；这里先给一个占位，
+  // 保证即使看图失败，对话也会继续（模型不会假装没看到）。
+  const content = event?.content;
+  if (content && typeof content === 'object') {
+    if (content.kind === 'image') return '[发来一张图片]';
+    if (content.kind === 'emoji') return '[发来一个表情]';
+    if (content.kind === 'video') return '[发来一条视频]';
+    if (content.kind === 'file') return `[发来一个文件] ${String(content.file?.name ?? '')}`.trim();
+    if (content.kind === 'link') return `[分享了一个链接] ${String(content.link?.title ?? '')}`.trim();
+    if (content.kind === 'share' && !event?.work?.title) return '[分享了一个作品]';
+    // SDK 解析不了的新消息类型也不能静默丢掉，至少让模型知道「对方发了东西」。
+    if (content.kind === 'unknown') return '[发来一条暂不支持的消息]';
+  }
   if (event?.work?.title) return `[分享了作品] ${event.work.title}`;
   if (event?.comment) return '[分享了一条评论]';
   return '';
@@ -1083,7 +1276,23 @@ async function handleMessage(event) {
     const allowed = config.allowlist.find((item) => item.id === conversation.key);
     if (!allowed) { log(`忽略未授权会话 ${conversation.key}（允许名单 ${config.allowlist.length} 个）`); return; }
     const mentionNames = config.mentionNames;
-    if (conversation.isGroup && config.groupMentionOnly !== false && !addressesUs(event, mentionNames)) { log(`群消息未点名，忽略 ${conversation.key}`); return; }
+    const addressed = addressesUs(event, mentionNames);
+    const humanizeCfg = douyinHumanizeConfig();
+    if (conversation.isGroup && config.groupMentionOnly !== false && !addressed) {
+      log(`群消息未点名，忽略 ${conversation.key}`);
+      return;
+    }
+    // 和 QQ 一样：关掉「只在被叫到时回」后，没点名的群消息按接话意愿决定接不接，
+    // 而不是把群里的每一句都回一遍。
+    if (conversation.isGroup && config.groupMentionOnly === false && humanizeCfg.groupGate !== false && !addressed) {
+      const gate = humanizeOf();
+      const profile = gate.profileOf(humanizeCfg);
+      const chance = Math.max(0, Math.min(1, profile.replyProb * gate.willingness(humanizeCfg)));
+      if (Math.random() >= chance) {
+        log(`群消息没点名，按接话意愿不接 ${conversation.key}（${Math.round(chance * 100)}%）`);
+        return;
+      }
+    }
     const text = textOf(event);
     if (!text) return;
     // 有人在跟她说话（不一定是主人）：计入「有社交接触」，让沉默推导更准。
@@ -1097,26 +1306,34 @@ async function handleMessage(event) {
       log(`今日自动回复额度已满（${state.replies}/${config.dailyReplyLimit}），跳过 ${conversation.key}`);
       return;
     }
-    enqueueReply({ event, conversation, text, allowed, messageId });
+    // 攒一攒：和 QQ 共用档位（默认安静窗口 2 秒，没说完会多等）。
+    const gatherMs = humanizeCfg.gather === false ? 0 : humanizeOf().gatherDelayMs(text, humanizeCfg);
+    enqueueReply({ event, conversation, text, allowed, messageId, delayMs: DEBOUNCE_MS + gatherMs });
   } catch (error) {
     log(`消息处理失败：${String(error?.message ?? error).slice(0, 160)}`);
   }
 }
 
-function enqueueReply({ event, conversation, text, allowed, messageId }) {
+function enqueueReply({ event, conversation, text, allowed, messageId, delayMs = DEBOUNCE_MS }) {
   const key = conversation.key;
   let queue = queues.get(key);
-  if (!queue) { queue = { items: [], timer: null, chain: Promise.resolve() }; queues.set(key, queue); }
+  if (!queue) { queue = { items: [], timer: null, chain: Promise.resolve(), firstAt: 0 }; queues.set(key, queue); }
   queue.items.push({ event, conversation, text, allowed, messageId });
-  if (queue.timer) return;
+  // 对方还在补：每条新消息都把安静窗口往后推，但一轮最多等 8 秒（与 QQ 的攒一攒同义）。
+  const now = Date.now();
+  if (!queue.firstAt) queue.firstAt = now;
+  if (queue.timer) clearTimeout(queue.timer);
+  const elapsed = now - queue.firstAt;
+  const wait = Math.max(DEBOUNCE_MS, Math.min(delayMs, 8000 - elapsed));
   queue.timer = setTimeout(() => {
     queue.timer = null;
+    queue.firstAt = 0;
     const batch = queue.items.splice(0);
     const task = () => flushBatch({ conversation, batch });
     queue.chain = queue.chain.then(task).catch((error) => {
       log(`回复失败：${String(error?.message ?? error).slice(0, 160)}`);
     });
-  }, DEBOUNCE_MS);
+  }, wait);
 }
 
 async function flushBatch({ conversation, batch }) {
@@ -1145,6 +1362,22 @@ async function flushBatch({ conversation, batch }) {
   // 梗百科：群里冒出生梗时先把那一条词条查好，别让模型硬猜（内置词库，不联网）
   const memeWikiBlock = memeWikiPromptBlock(lines, { key: conversation.key });
   if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
+  // 看图：抖音图片是加密的，先下载解密再交给视觉模型；看不懂就明确告诉模型别编。
+  const mediaParts = await collectDouyinMedia(batch);
+  let seeMemeBlock = '';
+  if (mediaParts.length) {
+    const engine = seeMemeOf();
+    if (engine) {
+      try {
+        seeMemeBlock = await engine.analyzeTurn({
+          imageParts: mediaParts,
+          saidText: lines.slice(-600),
+          sender: senderNameOf(batch.at(-1)?.event),
+        });
+      } catch (error) { log(`[看图] 分析失败：${String(error?.message ?? error).slice(0, 140)}`); }
+    }
+    if (!seeMemeBlock) seeMemeBlock = '【图片】对方发来图片/表情，但这次没看清内容；不要编造图里有什么，可以让对方说说。';
+  }
   // 人格已经烘焙进 douyin-chat preset 的 system prompt（见 preset-sync）。
   // 人格版本变了（或老会话根本没有记录）会在 openChatSession 里直接换新会话，
   // 对话正文里不再重复注入身份/语气/语料——避免每轮刷一大段人格。
@@ -1155,6 +1388,7 @@ async function flushBatch({ conversation, batch }) {
     crossDigest,
     mcpToolHint,
     memeWikiBlock,
+    seeMemeBlock,
     ...personaBits,
     '下面是刚收到的新消息。只输出要发出去的回复：',
     '- 你就是上面的角色本人，不是客服或助理：保持她的身份、性格和说话方式，不要提 AI / 模型 / 提示词；',
@@ -1163,6 +1397,8 @@ async function flushBatch({ conversation, batch }) {
     '- 像真人在手机上打字：句子短、可以不完整；别为了显得像人硬塞网络用语和梗；',
     '- 多数情况只回一句，最多两条；只有真要补充时才用 ||| 分条，每条一两句话；',
     '- 不用每条都正面回答：可以只回一个反应（「？」「行」「确实」），可以反问，也可以顺着对方的梗接；',
+    '- 群聊里不想接就只输出 [SILENT]；不要写「没叫我 / 不接 / 不插话」这种说明，它会被原样发到群里；私聊不要输出 [SILENT]。',
+    '- 直接回应内容，不要评价自己：不说「我能接住」「这个梗我懂」「我 get 到了」「我懂你意思」这类旁白；',
     '- 禁止客服腔和 AI 腔：不说「请问」「有什么可以帮你」「希望对你有帮助」，不写排比句，不做总结陈词，不礼貌过度；',
     '- 别接「你是不是 AI」「在考你」「调教你」「训练你」这类话题，不评论自己学没学会、露没露馅；被这么说就一句带过，不解释；',
     '- 不知道的事就说不知道，不要编造没见过的经历、人设背景或现实里没发生的事；',
@@ -1175,10 +1411,28 @@ async function flushBatch({ conversation, batch }) {
   try {
     const chat = await openChatSession(conversation.key);
     const reply = await askChat(chat, prompt);
-    const text = normalizeOutgoing(reply);
-    if (!text) throw new Error('回复为空');
-    const bubbles = splitBubbles(text);
-    if (!bubbles.length) throw new Error('回复为空');
+    // 统一出站管道：抽表情/图片、去 AI 味、抖音去 Markdown、群聊限长、脱敏、
+    // 以及「没叫我，不接」这类决定文本的拦截（与 QQ 同一份规则）。
+    const prepared = prepareReply(reply, {
+      platform: 'douyin',
+      group: conversation.isGroup,
+      cleanClutter: qqHumanizeConfig().cleanReply !== false,
+      maxChars: conversation.isGroup ? 80 : 200,
+      stripPaths: true,
+      allowSilence: true,
+    });
+    const text = prepared.text;
+    if (!text && !prepared.images.length) throw new Error('回复为空');
+    // 群里决定不接时，不要把这句「没叫我，不接」当回复发出去。
+    if (prepared.silent) {
+      const ids = readReplied();
+      for (const item of batch) if (item.messageId) ids.push(item.messageId);
+      saveReplied(ids);
+      log(`群聊判断为不接，已跳过发送 ${conversation.key}：${text.slice(0, 20)}`);
+      return;
+    }
+    const bubbles = splitBubbles(text, { group: conversation.isGroup });
+    if (!bubbles.length && !prepared.images.length) throw new Error('回复为空');
     const latest = batch.at(-1).event;
     // 拆条连发：真人不会把一屏话塞进一个气泡。条与条之间按条长停一下，像在打第二句。
     for (let i = 0; i < bubbles.length; i += 1) {
@@ -1191,8 +1445,9 @@ async function flushBatch({ conversation, batch }) {
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
     }
-    // 大肥鱼表情包：文字发完后补一张（私信/群聊都走同一个 event.reply 图片消息；不阻塞回复记账）
-    void maybeSendDouyinSticker(latest, text);
+    // 模型主动引用的表情先发；没有再自动补一张，避免两张。
+    if (prepared.images.length) void sendDouyinImages(latest, prepared.images);
+    else void maybeSendDouyinSticker(latest, text);
 
     const state = readState();
     state.replies += 1;
@@ -1237,38 +1492,23 @@ function qqHumanizeConfig() {
   return value;
 }
 
-/** 抖音 IM 对长消息不友好：压成一段、去掉 Markdown、截到 200 字。 */
-function normalizeOutgoing(input) {
-  // 抖音是公开场合：模型输出直发前先脱敏本机路径（与 QQ 出站收口同一层）。
-  let text = redactLocalPaths(humanizeReplyText(input, { cleanClutter: qqHumanizeConfig().cleanReply !== false }));
-  if (!text) return '';
-  text = text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[*#`>_~]/g, '')
-    .replace(/\r/g, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
-  if (text.length <= 200) return text;
-  const cut = text.slice(0, 200);
-  const dot = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'), cut.lastIndexOf('\n'));
-  return (dot > 80 ? cut.slice(0, dot + 1) : cut).trim();
-}
-
 /**
- * 把一段回复拆成最多 2 条「气泡」。模型按提示词用 ||| 分隔；
+ * 把一段回复拆成「气泡」。模型按提示词用 ||| 分隔；
  * 没用分隔符但有换行时按换行拆（真人打字换行≈发新条）。
- * 单条超 100 字按标点截断——超过就不像「一条消息」了。
+ * 群聊只发一条、单条更短：群里连发两条以上很像刷屏。
  */
-function splitBubbles(text) {
+function splitBubbles(text, { group = false } = {}) {
   const raw = String(text ?? '');
   const parts = (raw.includes('|||') ? raw.split(/\|{3,}/) : raw.split(/\n+/))
     .map((part) => part.trim())
     .filter(Boolean);
+  const maxCount = group ? 1 : 2;
+  const maxLen = group ? 80 : 100;
   const bubbles = [];
   for (const part of parts) {
-    if (bubbles.length >= 2) break;
-    if (part.length <= 100) { bubbles.push(part); continue; }
-    const cut = part.slice(0, 100);
+    if (bubbles.length >= maxCount) break;
+    if (part.length <= maxLen) { bubbles.push(part); continue; }
+    const cut = part.slice(0, maxLen);
     const dot = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'), cut.lastIndexOf('…'), cut.lastIndexOf('，'));
     bubbles.push((dot > 40 ? cut.slice(0, dot + 1) : cut).trim());
   }

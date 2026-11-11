@@ -67,59 +67,45 @@ for (let i = 0; i < lines.length; i += 1) {
 }
 if (sendHits.length) ok(`文本发送点 ${sendHits.length} 处，全部位于白名单函数`);
 
-// ── 2) 每个文本入口必须做本机路径脱敏 ──────────────────────────────────
-const REDACT_REQUIRED = ['sendToQQ', 'sendBurstToQQ', 'sendGroupWithAt', 'onebotSend'];
-for (const fn of REDACT_REQUIRED) {
+// ── 2) 每个文本入口必须走统一出站管道 ──────────────────────────────────
+//     2026-11-11 收口：清洗不再各写一份，统一在 src/outbound-reply.mjs 的 prepareReply()。
+//     这里只守「入口有没有接管道」；管道内部的行为由 outbound-pipeline-audit.mjs 逐条回归。
+const PIPELINE_ENTRIES = ['sendToQQ', 'sendBurstToQQ', 'sendGroupWithAt', 'sendMessagesV2'];
+for (const fn of PIPELINE_ENTRIES) {
   const start = lines.findIndex((l) => new RegExp(`(?:async\\s+)?function\\s+${fn}\\s*\\(`).test(l));
   if (start < 0) { fail(`找不到函数 ${fn}`); continue; }
-  // 取函数体：向下到下一个顶层 function 声明或文件末尾（足够覆盖本函数）
   let end = lines.length - 1;
   for (let i = start + 1; i < lines.length; i += 1) {
     if (/^\s{0,4}(?:async\s+)?function\s+[A-Za-z_$]/.test(lines[i])) { end = i - 1; break; }
   }
   const body = lines.slice(start, end + 1).join('\n');
-  if (!body.includes('redactLocalPaths(')) fail(`[路径脱敏缺失] ${fn} 没有调用 redactLocalPaths()`);
-  else ok(`${fn} 已做本机路径脱敏`);
+  if (!body.includes('prepareReply(')) {
+    fail(`[未接管] ${fn} 没有走 prepareReply()：又会各自写一份清洗，问题只在部分平台修好`);
+  } else ok(`${fn} 走统一出站管道`);
 }
 
-// ── 3) 承载模型输出的入口必须剥离 Markdown 图片 ────────────────────────
-const IMAGE_STRIP_REQUIRED = ['sendToQQ', 'sendBurstToQQ', 'sendGroupWithAt', 'sendMessagesV2'];
-for (const fn of IMAGE_STRIP_REQUIRED) {
-  const start = lines.findIndex((l) => new RegExp(`(?:async\\s+)?function\\s+${fn}\\s*\\(`).test(l));
-  if (start < 0) continue;
-  let end = lines.length - 1;
-  for (let i = start + 1; i < lines.length; i += 1) {
-    if (/^\s{0,4}(?:async\s+)?function\s+[A-Za-z_$]/.test(lines[i])) { end = i - 1; break; }
-  }
-  const body = lines.slice(start, end + 1).join('\n');
-  if (!body.includes('splitMarkdownImages(')) fail(`[图片未剥离] ${fn} 没有调用 splitMarkdownImages()：Markdown 图片行可能被当文字发出去`);
-  else ok(`${fn} 已剥离 Markdown 图片行`);
-}
-
-// ── 4) 不允许把本地路径拼进 Markdown 图片 ─────────────────────────────
+// ── 3) 不允许把本地路径拼进 Markdown 图片 ─────────────────────────────
 const SOURCE_DIRS = ['src', 'backend', 'packages/dsh-dfy-core'].map((d) => path.join(ROOT, d));
-// 桥接之外的三个「模型输出直发外部聊天」旁路也必须脱敏（2026-11-09 补查实装）：
+// 桥接之外的三个「模型输出直发外部聊天」旁路也必须接管道（脱敏在管道里做）：
 //   qq-direct（路线 B 兜底直发 QQ）、douyin-im（抖音回复）、dfy-raw-chat（回复经 AstrBot 发 QQ）
 const BYPASS_FILES = [
   { file: path.join(ROOT, 'backend', 'lib', 'qq-direct.js'), label: 'qq-direct（直发 QQ）' },
   { file: path.join(ROOT, 'backend', 'lib', 'douyin-im.js'), label: 'douyin-im（抖音回复）' },
   { file: path.join(ROOT, 'backend', 'lib', 'dfy-raw-chat.js'), label: 'dfy-raw-chat（经 AstrBot 发 QQ）' },
+  { file: path.join(ROOT, 'backend', 'lib', 'pet-chat.js'), label: 'pet-chat（桌宠气泡）' },
 ];
 for (const { file, label } of BYPASS_FILES) {
   const text = read(file);
-  if (!text.includes('redactLocalPaths(')) fail(`[旁路脱敏缺失] ${label} 没有调用 redactLocalPaths()：模型输出直发外部聊天，可能带本机路径`);
-  else ok(`${label} 已做本机路径脱敏`);
+  if (!text.includes('outbound-reply.mjs') || !text.includes('prepareReply(')) {
+    fail(`[旁路未接管] ${label} 没有走 prepareReply()：脱敏/去 AI 味会再次漏在这条路上`);
+  } else ok(`${label} 走统一出站管道`);
 }
-const HUMANIZE_FILES = [
-  { file: path.join(ROOT, 'backend', 'lib', 'douyin-im.js'), label: 'douyin-im（抖音回复）' },
-  { file: path.join(ROOT, 'backend', 'lib', 'dfy-raw-chat.js'), label: 'dfy-raw-chat（经 AstrBot 发 QQ）' },
-];
-for (const { file, label } of HUMANIZE_FILES) {
-  const text = read(file);
-  // 这些是模型输出直发外部聊天：必须过 humanize（表情标记/空行/客服腔），
-  // 否则 AstrBot / 抖音会把 [sticker:…] 或空行原样发出去。
-  if (!text.includes('humanizeReplyText(')) fail(`[旁路清洗缺失] ${label} 没有调用 humanizeReplyText()`);
-  else ok(`${label} 已过 humanizeReplyText`);
+// 管道自己的承诺：脱敏开关必须真的调用 redactLocalPaths。
+{
+  const pipe = read(path.join(ROOT, 'src', 'outbound-reply.mjs'));
+  if (!/stripPaths[\s\S]{0,200}redactLocalPaths\(/.test(pipe)) {
+    fail('[管道脱敏] outbound-reply 的 stripPaths 没有调用 redactLocalPaths()');
+  } else ok('管道的 stripPaths 会做本机路径脱敏');
 }
 function walk(dir, out = []) {
   let entries = [];
@@ -281,6 +267,73 @@ ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
   } else if (!/readPersonaSeen\(\)\[key\] !== personaVersion/.test(douyinSrc)) {
     fail('[人格注入] 人格版本变了没有换新会话（新人格不会生效）');
   } else ok('抖音人格跟 preset 走，版本变了直接换新会话');
+}
+
+// ── 11) 抖音图片 / QQ 离线消息 / AI 味旁白 ─────────────────────────────
+//     2026-11-11 用户反馈：
+//       · 抖音发图/表情机器人没反应（textOf 返回空串，整条消息被丢掉）；
+//       · DSH 退出后 QQ 私聊/群聊消息丢失（队列只在内存、没有离线补课）；
+//       · 回复出现「这个我能接住」这类自我点评（提示词没有约束、出站也没清洗）。
+{
+  const douyinSrc = read(path.join(ROOT, 'backend', 'lib', 'douyin-im.js'));
+  if (!/content\.kind === 'image'/.test(douyinSrc)) {
+    fail('[抖音图片] textOf 没有处理 image 类型（图片消息会被当成空消息丢掉）');
+  } else if (!/collectDouyinMedia\(batch\)/.test(douyinSrc)) {
+    fail('[抖音图片] 回复前没有调用 collectDouyinMedia（图不会交给看图模型）');
+  } else if (!/decryptDouyinImage\(/.test(douyinSrc)) {
+    fail('[抖音图片] 缺少图片解密（抖音图片是 AES-GCM 加密的）');
+  } else ok('抖音图片/表情会下载解密并交给看图模型');
+
+  if (!/pending-prompts\.json/.test(src) || !/loadQueued\(\)/.test(src) || !/saveQueued\(\)/.test(src)) {
+    fail('[离线消息] QQ 待投递队列没有落盘（DSH 退出时排队消息会丢）');
+  } else if (!/chat-history-cursor\.json/.test(src) || !/runChatHistoryCatchUp\(/.test(src)) {
+    fail('[离线消息] 内置版没有离线历史补课（DSH 关闭期间的消息不会补回来）');
+  } else ok('QQ 待投递队列落盘 + 内置版离线历史补课');
+
+  const cleanupSrc = read(path.join(ROOT, 'src', 'reply-cleanup.mjs'));
+  if (!/metaTail/.test(cleanupSrc)) {
+    fail('[AI 味] reply-cleanup 没有清理「我能接住 / 我 get 到了」这类自我点评');
+  } else if (!/agreeOpen/.test(cleanupSrc)) {
+    fail('[AI 味] reply-cleanup 没有清理「确实 / 就是 / 对 / 嗯」这类固定附和开场');
+  } else ok('回复会清掉「我能接住」类自我点评与固定附和开场');
+
+  // 群聊啰嗦：模型回复必须限长，且只对 agent 回复生效（系统提示不能被截断）。
+  if (!/capGroupReply|capText/.test(src)) {
+    fail('[群聊啰嗦] 缺少群聊限长（群聊小作文会原样发出去）');
+  } else if (!/groupCap: true/.test(src)) {
+    fail('[群聊啰嗦] 普通回复没有启用 groupCap');
+  } else ok('群聊模型回复会限长（≤80 字，按标点截断）');
+
+  // 抖音群聊：要有和 QQ 同源的接话意愿/攒一攒，以及群聊短回复。
+  if (!/createHumanizeGate/.test(douyinSrc)) {
+    fail('[抖音群聊] 没有接入 humanize 接话意愿（关掉「只被叫才回」后会每条都回）');
+  } else if (!/groupMentionOnly === false/.test(douyinSrc) || !/gatherDelayMs\(/.test(douyinSrc)) {
+    fail('[抖音群聊] 缺少群聊接话意愿或攒一攒');
+  } else if (!/maxChars: conversation\.isGroup \? 80/.test(douyinSrc)) {
+    fail('[抖音群聊] 群聊回复没有单独限长');
+  } else ok('抖音群聊有接话意愿/攒一攒，群聊回复更短');
+
+  // 设置页必须能关掉温柔模式（否则用户只能在 config.json 里改）。
+  const qqPage = read(path.join(ROOT, 'lib', 'ui', 'pages', '90-qq.js'));
+  if (!/admin", "gentle"/.test(qqPage)) {
+    fail('[设置页] QQ 页没有「温柔模式」开关（用户找不到，也关不掉）');
+  } else ok('QQ 页有「温柔模式」开关');
+
+  // 模型把「不接」的内心决定当话说出来时，必须拦在群聊出站之前。
+  if (!/export function looksLikeSilenceDecision/.test(cleanupSrc)) {
+    fail('[沉默判定] reply-cleanup 没有 looksLikeSilenceDecision');
+  } else if (!/isSilenceDecision\(plain\)/.test(src)) {
+    fail('[沉默判定] QQ 群聊没有拦「没叫我，不接」这类决定文本');
+  } else if (!/allowSilence: true/.test(douyinSrc) || !/prepared\.silent/.test(douyinSrc)) {
+    fail('[沉默判定] 抖音群聊没有拦「没叫我，不接」这类决定文本');
+  } else ok('群聊会拦「没叫我，不接」这类决定文本');
+
+  // 表情引用：模型可能写全角 Markdown，抖音也必须把 dshsticker 变成真图而不是文字。
+  if (!/normalizeFullWidthMarkdown/.test(cleanupSrc)) {
+    fail('[表情引用] reply-cleanup 没有归一全角 Markdown 图片（GLM 会把 ![..]（..） 当文字发出去）');
+  } else if (!/sendDouyinImages\(/.test(douyinSrc) || !/prepared\.images/.test(douyinSrc)) {
+    fail('[表情引用] 抖音没有把 dshsticker Markdown 抽出来发真图');
+  } else ok('全角 Markdown 会归一，抖音的 dshsticker 引用会发真图');
 }
 
 // ── 结果 ──────────────────────────────────────────────────────────────

@@ -16,8 +16,7 @@ import crypto from 'node:crypto';
 import { createTurnCollector, NodeApiClient, discoverDshLaunchToken } from '../../src/dsh-client.js';
 import { discoverDshBaseUrl, probeDshBaseUrl } from '../../src/dsh-port.js';
 import { effectiveQqConfigFile } from '../../src/config-locate.js';
-import { redactLocalPaths } from '../../src/redact-paths.mjs';
-import { humanizeReplyText } from '../../src/reply-cleanup.mjs';
+import { prepareReply } from '../../src/outbound-reply.mjs';
 import { STATE_DIR } from './paths.js';
 import { readUnified } from './store.js';
 
@@ -256,11 +255,14 @@ export function createRawChat({ ctx, log = () => {}, resolveModel = null } = {})
       settle(w, { ok: false, error: `灌消息失败：${reason.slice(0, 260)}` });
     }
     const reply = await promise;
-    // 这条回复会经 AstrBot 发往 QQ（公开场合）：与桥接收口同一层脱敏本机路径。
-    // AstrBot 收的是纯文本，发不了 Markdown 图片：把图片行剥掉，别让
-    // `![名字](dshsticker:…)` 原样打到 QQ 上（表情由 AstrBot 自己的插件负责）。
-    const cleaned = humanizeReplyText(reply, { cleanClutter: cleanClutterEnabled() }).replace(/!\[[^\]]*\]\([^)]+\)/g, '');
-    return redactLocalPaths(cleaned).trim();
+    // 这条回复会经 AstrBot 发往 QQ（公开场合）：走统一出站管道，
+    // 与 QQ / 抖音同一份清洗规则（去 AI 味、剥图片行、脱敏本机路径）。
+    // AstrBot 只收纯文本，发不了 Markdown 图片：platform='astrbot' 会把图片丢弃。
+    return prepareReply(reply, {
+      platform: 'astrbot',
+      cleanClutter: cleanClutterEnabled(),
+      stripPaths: true,
+    }).text.trim();
   }
 
   /** OpenAI 兼容解析：取最后一条用户消息的纯文本。 */

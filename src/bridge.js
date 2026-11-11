@@ -37,7 +37,9 @@ import {
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { createNekoStickers } from './nekowhale-stickers.mjs';
 import { createHumanizeGate } from './humanize-gate.mjs';
-import { humanizeReplyText } from './reply-cleanup.mjs';
+import { humanizeReplyText, looksLikeSilenceDecision } from './reply-cleanup.mjs';
+import { prepareReply, capText, takeStickerTags, takeMarkdownImages, hasMarkdownImage, hasStickerTag } from './outbound-reply.mjs';
+import { writeJsonFileAtomic as writeJsonFileAtomicSync } from './atomic-write.mjs';
 import { createMemoryRecall } from './memory-recall.mjs';
 import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
@@ -155,22 +157,8 @@ const ROOT = path.resolve(__dirname, '..');
  * 静默回落到默认配置 —— 用户的 QQ 号、允许列表、凭据看起来「被重置了」，实际上
  * 只是文件坏了。rename 在同一分区上是原子的，读到的要么是旧文件、要么是新文件。
  *
- * 临时名带 pid + 递增序号：同一进程里两次写同一文件也不会互相覆盖临时文件。
+ * 实现已收口到 atomic-write.mjs（全项目唯一一份）；这里保留别名以兼容调用点。
  */
-let __jsonTmpSeq = 0;
-function writeJsonFileAtomicSync(file, value) {
-  // 数据根首次启动时目录可能还不存在（config 在 $DSH_HOME/surfcore/qq/）：先建目录再写。
-  try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch {}
-  const tmp = `${file}.${process.pid}.${++__jsonTmpSeq}.tmp`;
-  try {
-    fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-    fs.renameSync(tmp, file);
-    return true;
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
-}
 
 // 嵌入模式：由 DSH 插件宿主在本进程内启动（不再 spawn 独立进程）。
 // 嵌入时**不能**抢锁、不能注册会退出宿主进程的钩子、不能把控制台 HTML 对外提供。
@@ -662,6 +650,13 @@ const SILENT_MARKER = '[SILENT]';
 function isSilentMarker(text) {
   return /^\s*\[SILENT\]\s*$/i.test(String(text ?? '').trim());
 }
+
+/**
+ * 模型有时不写 [SILENT]，而是把「决定」当话发出来：
+ *   「没叫我，不接」「群里没叫我，不接话」「沉默」「这条不是在叫我」…
+ * 这些在群里会变成一条很怪的消息。具体判定在 reply-cleanup（QQ / 抖音共用）。
+ */
+const isSilenceDecision = looksLikeSilenceDecision;
 
 // DSH MCP 发送类工具：一旦 AI 在回合里调用过这些工具，说明消息已经由工具发出，
 // 桥接应跳过该回合的自动转发，避免“工具发一条 + 自动转发一条”的重复。
@@ -3527,6 +3522,50 @@ async function main(options = {}) {
   const QUEUE_MAX = 50;
   const QUEUE_HINT_COOLDOWN_MS = 30_000;
   const queueRetries = new Map(); // key -> 连续补投失败次数（用于退避/暂停恢复）
+  // 队列落盘：以前 queued 只在内存里，DSH 退出（尤其嵌入模式整个进程结束）时
+  // 「系统服务重启中，消息已排队」的那批消息会直接消失。落盘后下次启动补投。
+  const QUEUE_FILE = path.join(STATE_DIR, 'pending-prompts.json');
+  const saveQueued = () => {
+    try {
+      const data = {};
+      for (const [key, items] of queued) {
+        if (Array.isArray(items) && items.length) data[key] = items;
+      }
+      atomicWriteJson(QUEUE_FILE, data);
+    } catch (error) { log(`保存待投递队列失败：${error?.message ?? error}`); }
+  };
+  const loadQueued = () => {
+    const data = readJsonSafe(QUEUE_FILE, {}, false);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+    let total = 0;
+    for (const [key, items] of Object.entries(data)) {
+      if (!/^(group|private):\d+$/.test(key) || !Array.isArray(items)) continue;
+      const clean = items
+        .filter((item) => item && typeof item.promptText === 'string' && item.promptText)
+        .slice(-QUEUE_MAX);
+      if (!clean.length) continue;
+      queued.set(key, clean);
+      total += clean.length;
+    }
+    if (total) log(`已恢复 ${total} 条上次退出前没投递出去的消息，DSH 就绪后自动补投`);
+  };
+  // 已知会话：内置版没有 unread 状态，靠这份名单在重启后找回离线消息。
+  const KNOWN_FILE = path.join(STATE_DIR, 'known-conversations.json');
+  const knownConversations = (() => {
+    const data = readJsonSafe(KNOWN_FILE, {}, false);
+    return data && typeof data === 'object' && !Array.isArray(data) ? { ...data } : {};
+  })();
+  let knownSaveTimer = null;
+  function noteKnownConversation(key) {
+    if (!/^(group|private):\d+$/.test(key)) return;
+    knownConversations[key] = Date.now();
+    if (knownSaveTimer) return;
+    knownSaveTimer = setTimeout(() => {
+      knownSaveTimer = null;
+      try { atomicWriteJson(KNOWN_FILE, knownConversations); } catch { /* 下次还有机会 */ }
+    }, 5000);
+    knownSaveTimer.unref?.();
+  }
 
   // reset 竞态导致 ensureSession 抛「会话创建期间已重置」时，把消息放回队列稍后重试。
   // 已在队列中的相同文本不重复入队。
@@ -3539,6 +3578,7 @@ async function main(options = {}) {
       }
       items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason, petOwnerMessage: !!opts.petOwnerMessage });
       queued.set(key, items);
+      saveQueued();
     }
     queueRetries.delete(key); // 新消息入队视为新的机会，重置退避计数
     setTimeout(() => { flushQueue(); }, 3000);
@@ -3664,8 +3704,22 @@ async function main(options = {}) {
     return modeAllowed(key, m[1], Number(m[2]), cfg, currentMode);
   }
 
+  /**
+   * preset 文件指纹：语气规则改在 preset 的 system prompt 里，只换 preset 内容、
+   * 不换 preset 名字时，老会话会一直用旧提示词。把它算进会话策略，内容一变就换新会话。
+   */
+  function presetContentKey(presetId) {
+    if (!presetId) return '';
+    try {
+      const file = new URL(`../presets/${presetId}.patch.yml`, import.meta.url);
+      const stat = fs.statSync(file);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch { return ''; }
+  }
+
   function sessionPolicy(key) {
-    return JSON.stringify([currentMode, modePreset(key, currentMode, cfg) ?? '', currentMode === 'closed-agent' ? cfg.ownerQQ : null]);
+    const preset = modePreset(key, currentMode, cfg) ?? '';
+    return JSON.stringify([currentMode, preset, presetContentKey(preset), currentMode === 'closed-agent' ? cfg.ownerQQ : null]);
   }
 
   function isCurrentSession(key, sessionId) {
@@ -3793,8 +3847,10 @@ async function main(options = {}) {
     flushingQueue = true;
     try {
       const entries = [...queued.entries()];
-      queued.clear();
       for (const [key, items] of entries) {
+        // 只把当前会话的这一批从队列里拿出来；其它会话的还留在 queued 里（也还在盘上），
+        // 这样处理到一半进程被关掉，不会把别的会话排队消息一起弄丢。
+        queued.delete(key);
         let sent = 0;
         let failed = 0;
         for (let i = 0; i < items.length; i++) {
@@ -3827,6 +3883,7 @@ async function main(options = {}) {
             break;
           }
         }
+        saveQueued();
         log(`已补投 ${key}: 成功 ${sent} 条，失败 ${failed} 条`);
         if (failed > 0) {
           const retries = (queueRetries.get(key) ?? 0) + 1;
@@ -3844,6 +3901,7 @@ async function main(options = {}) {
         }
       }
     } finally {
+      saveQueued();
       flushingQueue = false;
       if (flushQueueAgain) {
         flushQueueAgain = false;
@@ -3891,6 +3949,8 @@ async function main(options = {}) {
           wakeBacklogConversations('boot');
         }
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
+        // 内置版也要补：DSH 关闭期间 SnowLuma 不会推历史，只靠这里把消息捞回来。
+        void runChatHistoryCatchUp('dsh-ready');
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
         for (const key of [...slangWindows.keys()]) maybeQueueSlangExtraction(key);
       } else if (currentMode !== lastMode) {
@@ -9208,9 +9268,9 @@ async function main(options = {}) {
       const stickerCfg = nowCfg.stickers ?? {};
       if (stickerCfg.enabled === false) return;   // 默认开；面板里可关
       // 本轮回复里已经有表情插件（dsh-nekowhale-stickers）的 Markdown 图 → 自动配图让位，避免两张
-      if (/!\[[^\]]*\]\([^)]+\)/.test(String(text ?? ''))) return;
+      if (hasMarkdownImage(text)) return;
       // 模型自己写了 [sticker:名字]：sendToQQ 会按标记补发真图，这里别再自动补第二张
-      if (/\[sticker[:：]/.test(String(text ?? ''))) return;
+      if (hasStickerTag(text)) return;
       if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
       nekoStickers ||= createNekoStickers({ dir: path.join(STATE_DIR, 'nekowhale-cache'), log });
       const result = await nekoStickers.afterReply({
@@ -9246,16 +9306,8 @@ async function main(options = {}) {
   // 另外：模型有时会自己写 `[sticker:委屈]` 这种「回复标记」（外部表情插件的约定），
   // 桥接原来的发送链不认它，原样发到 QQ 就是一段乱码文字。这里统一剥出来，
   // 能匹配到大肥鱼表情就补发一张真图；匹配不到就只删标记，绝不把标记当正文发出去。
-  const STICKER_MARK_RE = /\[sticker[:：]\s*([^\]\n]{1,40})\]/gi;
-  function takeStickerRefs(input) {
-    const refs = [];
-    const text = String(input ?? '').replace(STICKER_MARK_RE, (_match, ref) => {
-      const value = String(ref ?? '').trim();
-      if (value) refs.push(value);
-      return '';
-    });
-    return { text, refs };
-  }
+  // 具体规则在 outbound-reply.mjs，这里只保留本进程内的调用别名。
+  const takeStickerRefs = takeStickerTags;
   async function sendStickerRef(key, ref) {
     try {
       if (!/^(private|group):\d{5,15}$/.test(String(key ?? ''))) return;
@@ -9282,13 +9334,8 @@ async function main(options = {}) {
     }
   }
   function splitMarkdownImages(input) {
-    const images = [];
-    const text = String(input ?? '').replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_match, url) => {
-      const value = String(url ?? '').trim();
-      if (value) images.push(value);
-      return '';
-    });
-    return { text: text.replace(/\n{3,}/g, '\n\n').trim(), images };
+    // 与 prepareReply 共用同一份 Markdown 图片规则（允许 ] 与 ( 之间有空格）。
+    return takeMarkdownImages(input);
   }
 
   async function sendMarkdownImage(key, rawUrl) {
@@ -9339,22 +9386,34 @@ async function main(options = {}) {
     noteSendSuccess(key);
   }
 
+  // 群聊回复上限：真人接话中位数 15 字、75% 在 30 字以内。超过 80 字基本就是
+  // 一屏小作文，在群里特别显眼；实际截断逻辑在 outbound-reply.mjs 的 capText。
+  const GROUP_REPLY_MAX = 80;
+  const capGroupReply = (text) => capText(text, GROUP_REPLY_MAX, { collapseLines: true });
+
   function sendToQQ(key, msg, opts = {}) {
     const burstStartedAt = Date.now();
-    const marked = takeStickerRefs(msg);
-    msg = humanizeReplyText(marked.text, { cleanClutter: cfg.humanize?.cleanReply !== false });
-    const stickerRef = marked.refs[0] || '';
-    const markdown = splitMarkdownImages(msg);
-    msg = markdown.text;
-    const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
+    const isGroup = kind === 'group';
+    // 所有出站文本走同一个管道（抽表情标记 / 归一全角 Markdown / 去 AI 味 / 限长 / 脱敏）。
+    // 入口只负责「怎么发」，不再各写一份清洗 —— 以前 QQ 修了、抖音漏了就是这么来的。
+    const prepared = prepareReply(msg, {
+      platform: 'qq',
+      group: isGroup,
+      cleanClutter: cfg.humanize?.cleanReply !== false,
+      maxChars: opts.groupCap && isGroup ? GROUP_REPLY_MAX : 0,
+      stripPaths: isGroup,
+      transform: redactKnownTokensOnly,
+    });
+    const stickerRef = prepared.stickerRefs[0] || '';
+    const assertSendAllowed = captureSendGuard(key);
     // 群聊是公开场合：出站文本再兜一层本机路径脱敏（图片行已在上面被剥离）。
-    const beforeRedact = redactKnownTokensOnly(msg);
-    const safeMsg = kind === 'group' ? redactLocalPaths(beforeRedact) : beforeRedact;
-    if (kind === 'group' && safeMsg !== beforeRedact) {
+    const beforeRedact = prepared.text;
+    const safeMsg = isGroup ? redactLocalPaths(beforeRedact) : beforeRedact;
+    if (isGroup && safeMsg !== beforeRedact) {
       logThrottled('privacy:group-path', 60_000, `[privacy] 群聊出站文本含本机路径/文件 URL，已脱敏 (${key})`);
     }
-    if (kind === 'group') recordFishWindow(key, '我', selfUserId, { isSelf: true });
+    if (isGroup) recordFishWindow(key, '我', selfUserId, { isSelf: true });
     const parts = splitForQQ(safeMsg);
     lastSendFailed.delete(key);
     let partIndex = 0;
@@ -9379,9 +9438,9 @@ async function main(options = {}) {
         })
         .then(() => sleep(cfg.sendDelayMs));
     }
-    if (markdown.images.length) {
+    if (prepared.images.length) {
       sendChain = sendChain.then(async () => {
-        for (const image of markdown.images) {
+        for (const image of prepared.images) {
           try {
             await sendMarkdownImage(key, image);
           } catch (error) {
@@ -9448,6 +9507,9 @@ async function main(options = {}) {
       let m;
       PLACEHOLDER_ALL.lastIndex = 0;
       while ((m = PLACEHOLDER_ALL.exec(tok)) !== null) {
+        // 零长度匹配会让 lastIndex 原地不动 → 死循环。占位符正则不应命中空串，
+        // 但模型/第三方改正则时必须有这层兜底。
+        if (m[0].length === 0) break;
         if (m.index > last) parts.push({ text: tok.slice(last, m.index), isPlaceholder: false });
         parts.push({ text: m[0], isPlaceholder: true });
         last = m.index + m[0].length;
@@ -9588,13 +9650,17 @@ async function main(options = {}) {
     const pendingStickerRefs = [];
     const cleaned = [];
     for (const raw of messages) {
-      const marked = takeStickerRefs(raw);
-      if (marked.refs.length) pendingStickerRefs.push(marked.refs[0]);
-      const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(marked.text), { cleanClutter: cfg.humanize?.cleanReply !== false }));
-      // 群聊：文本再兜一层本机路径脱敏（图片已作为独立条目剥离，不会误伤）。
-      const textPart = kind === 'group' ? redactLocalPaths(split.text) : split.text;
-      if (textPart) cleaned.push(textPart);
-      if (split.images.length) pendingImages.push(...split.images);
+      const prepared = prepareReply(raw, {
+        platform: 'qq',
+        group: kind === 'group',
+        cleanClutter: cfg.humanize?.cleanReply !== false,
+        maxChars: kind === 'group' ? GROUP_REPLY_MAX : 0,
+        stripPaths: kind === 'group',
+        transform: redactKnownTokensOnly,
+      });
+      if (prepared.stickerRefs.length) pendingStickerRefs.push(prepared.stickerRefs[0]);
+      if (prepared.text) cleaned.push(prepared.text);
+      if (prepared.images.length) pendingImages.push(...prepared.images);
     }
     for (let i = 0; i < cleaned.length; i++) {
       const msg = cleaned[i];
@@ -10271,15 +10337,18 @@ async function main(options = {}) {
     const stickerRefs = [];
     const images = [];
     for (let i = 0; i < messages.length; i++) {
-      // 工具直发路径同样要过 humanize（以前只有 sendToQQ / sendBurstToQQ 过）：
-      // 去掉客服腔、句末句号，避免二代工具发送绕过人格卡的「不用句号」规则。
-      const marked = takeStickerRefs(messages[i]);
-      if (marked.refs.length) stickerRefs.push(marked.refs[0]);
-      // 工具回复里也可能带 sticker_send 的 Markdown 图片行。这里以前直接当文字发，
-      // 会把 `![名字](dshsticker:…)` 原样打到 QQ 上；顺手抽出来，文本发完后补图。
-      const split = splitMarkdownImages(humanizeReplyText(marked.text, { cleanClutter: cfg.humanize?.cleanReply !== false }));
-      if (split.images.length) images.push(...split.images);
-      const msg = split.text;
+      // 工具直发路径也走同一个出站管道（以前各写一份清洗，
+      // 结果 QQ 修好了、抖音/工具路径漏着）。
+      const prepared = prepareReply(messages[i], {
+        platform: 'qq',
+        group: kind === 'group',
+        cleanClutter: cfg.humanize?.cleanReply !== false,
+        maxChars: kind === 'group' ? GROUP_REPLY_MAX : 0,
+        stripPaths: kind === 'group',
+      });
+      if (prepared.stickerRefs.length) stickerRefs.push(prepared.stickerRefs[0]);
+      if (prepared.images.length) images.push(...prepared.images);
+      const msg = prepared.text;
       if (!msg) continue; // 清洗后为空（整条都是客服套话，或纯表情）就不发空消息
       const useReply = i === 0 ? replyToMessageId : null;
       const useAt = i === 0 ? atUserId : null;
@@ -12854,6 +12923,7 @@ async function main(options = {}) {
       }
       items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason, petOwnerMessage: !!opts.petOwnerMessage });
       queued.set(key, items);
+      saveQueued();
       return { ok: true, queued: true };
     }
     let sessionId;
@@ -13464,11 +13534,17 @@ async function main(options = {}) {
   async function sendGroupWithAt(key, qq, text) {
     const [kind, id] = key.split(':');
     if (kind !== 'group') return sendToQQ(key, text);
-    // 主动搭话里也可能带表情包（Markdown 图片行）：先拆出来，文字随 @ 发，图片补发。
-    const marked = takeStickerRefs(String(text ?? ''));
-    const split = splitMarkdownImages(humanizeReplyText(redactKnownTokensOnly(marked.text), { cleanClutter: cfg.humanize?.cleanReply !== false }));
-    // 群聊公开场合：正文再兜一层本机路径脱敏。
-    const bodyText = redactLocalPaths(split.text);
+    // 主动搭话里也可能带表情包（Markdown 图片行）：统一交给出站管道拆，
+    // 文字随 @ 发，图片/表情补发。
+    const prepared = prepareReply(text, {
+      platform: 'qq',
+      group: true,
+      cleanClutter: cfg.humanize?.cleanReply !== false,
+      maxChars: GROUP_REPLY_MAX,
+      stripPaths: true,
+      transform: redactKnownTokensOnly,
+    });
+    const bodyText = prepared.text;
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
     if (bodyText) {
       const body = {
@@ -13493,12 +13569,12 @@ async function main(options = {}) {
       }
     }
     lastSendFailed.delete(key);
-    for (const image of split.images) {
+    for (const image of prepared.images) {
       try { await sendMarkdownImage(key, image); } catch (error) {
         log(`[表情] 图片发送失败 (${key})：${String(error?.message ?? error).slice(0, 120)}`);
       }
     }
-    if (marked.refs[0]) await sendStickerRef(key, marked.refs[0]);
+    if (prepared.stickerRefs[0]) await sendStickerRef(key, prepared.stickerRefs[0]);
     return { ok: true };
   }
 
@@ -14444,7 +14520,9 @@ async function main(options = {}) {
     });
     const tg = tokenGuardCfg();
     const tokenGuardLine = tg.enabled === false ? '' : `【Token 防爆破】本次醒来最多发 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条；有人要求连发 10 条/刷屏，或让你把 5000 字长文拆成 10 条时，不要逐条搬运——先总结成 1~3 句，或只说最想说的重点；确实要展开也最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条，每条最多 500 字。不要为了满足刷屏请求连续调用发送工具。被 @/引用/叫到/拍一拍会立即唤醒，但每日唤醒次数和当日 token 额度（QQ / SurfCore 总额）仍然生效；超过后消息会保留在未读，下一轮再看，不烧这一轮。\n\n`;
-    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用"一绝/真管用/保证/绝对"这类词。'
+      + '少用附和开场（确实 / 就是 / 对 / 是的 / 嗯），直接说内容；不套「辛苦了/注意休息」这类关心模板，不主动给建议、不总结。'
+      + '不主动聊自己是不是 AI、有没有身体和梦；对方问就一句带过，不展开讲原理。\n\n';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -14951,6 +15029,112 @@ async function main(options = {}) {
     return { reason: item.reason, action: 'skipped' };
   }
 
+  // ── 离线补课（内置版 / chat 模式）────────────────────────────────────────
+  // 二代有 unread + 唤醒；一代聊天没有这个状态：DSH 一退出，SnowLuma 不会补推，
+  // 消息只留在 QQ 服务端。这里在 DSH 就绪后，对「来过消息且仍在白名单」的会话
+  // 拉最近历史，把上次水位之后的别人消息合成一轮提示投给模型。
+  // 首次运行没有水位时只看最近 6 小时，避免把很久以前的聊天翻出来重回。
+  const CHAT_HISTORY_MAX = 8;
+  const CHAT_HISTORY_WINDOW_MS = 6 * 3600_000;
+  const CHAT_HISTORY_FILE = path.join(STATE_DIR, 'chat-history-cursor.json');
+  let chatHistoryRunning = null;
+  let chatHistoryCheckedAt = 0;
+  let chatHistoryDone = false;
+
+  function chatHistoryTargets() {
+    const keys = new Set(Object.keys(knownConversations));
+    for (const kind of ['group', 'private']) {
+      const list = cfg.allow?.[kind] ?? cfg.allow?.[`${kind}s`] ?? [];
+      for (const id of Array.isArray(list) ? list : []) {
+        const text = String(id ?? '').trim();
+        if (/^\d+$/.test(text)) keys.add(`${kind}:${text}`);
+      }
+    }
+    return [...keys].filter((key) => /^(group|private):\d+$/.test(key)).slice(0, 20);
+  }
+
+  async function chatHistoryTextOf(raw) {
+    const segments = Array.isArray(raw?.message) ? raw.message : [];
+    if (!segments.length) return '';
+    try {
+      const text = await segmentsToText(segments, { includeReply: false });
+      return truncateText(String(text ?? '').trim(), 160);
+    } catch { return ''; }
+  }
+
+  async function runChatHistoryCatchUp(trigger) {
+    if (!dshReady || currentMode === 'reserved2' || currentMode === 'closed-agent') return null;
+    if (!historyCatchUpConfig().enabled) return null;
+    if (chatHistoryDone) return null;   // 每次桥接启动只补一次，别每 10 秒翻一遍历史
+    // 先等登录拿到自己的 QQ 号，否则会把自己以前发的话当成别人说的再回一遍。
+    if (!String(selfUserId || '').trim()) return null;
+    if (chatHistoryRunning) return chatHistoryRunning;
+    const now = Date.now();
+    if (now - chatHistoryCheckedAt < HISTORY_CATCHUP_THROTTLE_MS) return null;
+    chatHistoryCheckedAt = now;
+    chatHistoryRunning = (async () => {
+      const loaded = readJsonSafe(CHAT_HISTORY_FILE, {}, false);
+      const map = loaded && typeof loaded === 'object' && !Array.isArray(loaded) ? loaded : {};
+      const self = String(selfUserId || '').trim();
+      let total = 0;
+      let fetchedAny = false;
+      for (const key of chatHistoryTargets()) {
+        const match = /^(group|private):(\d+)$/.exec(key);
+        if (!match) continue;
+        if (!isSessionAllowedInCurrentMode(key)) continue;
+        const kind = match[1];
+        const id = match[2];
+        const previous = Number(map[key] ?? 0);
+        const floor = previous > 0 ? previous : now - CHAT_HISTORY_WINDOW_MS;
+        const raws = await fetchOneBotHistory(kind, id, 20);
+        if (!raws) continue;
+        fetchedAny = true;
+        const missed = [];
+        let newest = previous;
+        for (const raw of raws) {
+          const senderId = String(raw?.sender?.user_id ?? raw?.user_id ?? '').trim();
+          const time = Number(raw?.time) > 0 ? Number(raw.time) * 1000 : 0;
+          if (time > newest) newest = time;
+          if (!time || time <= floor) continue;
+          if (self && senderId === self) continue;
+          if (senderBlocked(senderId, cfg.deny?.users)) continue;
+          const text = await chatHistoryTextOf(raw);
+          if (!text) continue;
+          missed.push({ name: String(raw?.sender?.card || raw?.sender?.nickname || senderId || '有人'), text });
+        }
+        // 水位只往前走，且不能低于本次的起点 floor：否则首次运行看到的全是很久以前
+        // 的历史时，会把水位写回过去，下次启动又把这些老消息当「刚错过」补一遍。
+        map[key] = Math.max(newest, floor);
+        // 退出前已经排进待投递队列的，以队列为准，别重复补一遍。
+        if ((queued.get(key)?.length ?? 0) > 0) continue;
+        if (!missed.length) continue;
+        const lines = missed.slice(-CHAT_HISTORY_MAX).map((item) => `${item.name}：${item.text}`).join('\n');
+        const prompt = [
+          `【离线期间的消息】${key}`,
+          '你刚才不在线（DSH 关闭或重启），下面是这段时间里收到、你没看到的消息，按时间顺序：',
+          lines,
+          '现在你重新上线了。看完自然接一下最后还在聊的话题：',
+          '- 不要逐条回复、不要复述这些消息、不要解释你刚下线/刚重启；',
+          '- 群里没人叫你、或者没什么想说的，只输出 [SILENT]，不要硬接；不要写「没叫我 / 不接」这种说明；',
+          '- 私聊里对方在等你，就正常回一句。',
+        ].join('\n');
+        try {
+          const result = await deliverPrompt(key, prompt, { silent: true });
+          if (result?.ok) total += Math.min(missed.length, CHAT_HISTORY_MAX);
+        } catch (error) { log(`[history] ${key} 离线补课投递失败：${error?.message ?? error}`); }
+      }
+      try { atomicWriteJson(CHAT_HISTORY_FILE, map); } catch { /* 下次再写 */ }
+      // 一个历史接口都没通（SnowLuma 还没就绪）就不算补完，下次检查再试。
+      if (fetchedAny) chatHistoryDone = true;
+      if (total) log(`[history] 离线补课完成（${trigger}）：补看 ${total} 条`);
+      return total;
+    })().catch((error) => {
+      log(`[history] 离线补课异常：${error?.message ?? error}`);
+      return 0;
+    }).finally(() => { chatHistoryRunning = null; });
+    return chatHistoryRunning;
+  }
+
   // ── 上线补历史消息（socialV2.history） ──────────────────────────────────
   //
   // 用户需求（2026-10-24）：每次上线查看历史消息，防止错过群友在掉线期间发的消息；
@@ -15447,6 +15631,9 @@ async function main(options = {}) {
       logThrottled(`unauth:${key}`, 10 * 60_000, `忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}；同类日志 10 分钟内只记一次）`);
       return;
     }
+    // 记下「这个会话真的来过消息」：DSH 退出期间的历史补课靠这份名单找会话，
+    // 不依赖白名单是否枚举得出来（allowAllWhenEmpty 时白名单是空的）。
+    noteKnownConversation(key);
     // 人的黑名单（deny.users）：**在一切副作用之前**返回 —— 不入库、不进上下文、
     // 不写记忆卡、不计鱼群、不触发唤醒。放在后面任何一处都等于「他还能叫醒你」。
     if (senderBlocked(event.user_id, cfg.deny?.users)) {
@@ -15815,7 +16002,9 @@ async function main(options = {}) {
     let chimeInHint = '';
     // 私聊 / 直接对我们说的消息：明确要求必须回复，避免模型自己输出 [SILENT] 导致 QQ 上没反应
     const directToUs = kind === 'private' || quoteTargetIsSelf || isOwner || isDirectAddress(textContent, event, kind);
-    const mustReplyHint = directToUs ? '\n\n【这条是直接对你说的，必须正常回复，不要输出 [SILENT]，也不要只回“嗯/收到/好”就结束。】' : '';
+    // 旧文案「不要只回嗯/收到/好就结束」会逼模型硬凑一句完整回复，正是 AI 味的来源；
+    // 改成「给个反应就行」，保留短回复的空间。
+    const mustReplyHint = directToUs ? '\n\n【这条是直接对你说的：给个反应就行（一个字、一个问号都可以），不要输出 [SILENT]；不用为了凑话解释、总结或给建议。】' : '';
     if (currentMode === 'chat' && kind === 'group' && !isOwner && cfg.chat?.addressFilter?.enabled !== false) {
       const segs = Array.isArray(event?.message) ? event.message : [];
       const selfId = String(event?.self_id ?? '');
@@ -16000,6 +16189,7 @@ async function main(options = {}) {
       }
       items.push({ promptText, media: mediaList });
       queued.set(key, items);
+      saveQueued();
       const now = Date.now();
       if ((queuedHintAt.get(key) ?? 0) + QUEUE_HINT_COOLDOWN_MS < now) {
         queuedHintAt.set(key, now);
@@ -16356,6 +16546,7 @@ async function main(options = {}) {
     // 固定 3 秒重连会以每分钟 20 行的速度刷屏，真正有用的错误反而被淹没。
     let retryMs = 3000;
     let failureStreak = 0;
+    // loop-allow: DSH 事件流长连接；shuttingDown 时 break，失败按指数退避（上限 30s）
     for (;;) {
       if (shuttingDown) break;
       let framesThisStream = 0;
@@ -16607,7 +16798,7 @@ async function main(options = {}) {
                   continue;
                 }
                 // 社交模式静默标记：AI 主动选择“潜水/不接话”，不发送到 QQ
-                if (isSilentMarker(plain)) {
+                if (isSilentMarker(plain) || (String(key).startsWith('group:') && isSilenceDecision(plain))) {
                   // 主动搭话回合选择了沉默 → 别再让 @ 挂到后面的普通回复上
                   pendingProactiveAt.delete(key);
                   log(`社交模式：AI 选择静默（${SILENT_MARKER}）(${key})`);
@@ -16747,24 +16938,25 @@ async function main(options = {}) {
                     const body = mAt ? plain.slice(mAt[0].length).trim() : plain;
                     if (atQq && body) {
                       try {
-                        await sendGroupWithAt(key, atQq, body);
-                        log(`agent 回复 (${key}) ${body.length} 字（自己 @ 了 ${atQq}）`);
-                        appendActivity(`${key} agent 回复(@${atQq})：${body.slice(0, 80)}`);
+                        const cappedBody = capGroupReply(body);
+                        await sendGroupWithAt(key, atQq, cappedBody);
+                        log(`agent 回复 (${key}) ${cappedBody.length} 字（自己 @ 了 ${atQq}）`);
+                        appendActivity(`${key} agent 回复(@${atQq})：${cappedBody.slice(0, 80)}`);
                       } catch (error) {
                         log(`带 @ 发送失败，退回普通发送 (${key}): ${error?.message ?? error}`);
-                        await sendToQQ(key, body);
+                        await sendToQQ(key, body, { groupCap: true });
                       void sendNekoAfterReply(key, body);
                       }
                     } else {
                       log(`agent 回复 (${key}) ${plain.length} 字（主动搭话，没 @ 人）`);
                       appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-                      await sendToQQ(key, plain);
+                      await sendToQQ(key, plain, { groupCap: true });
                     void sendNekoAfterReply(key, plain);
                     }
                   } else {
                     log(`agent 回复 (${key}) ${plain.length} 字`);
                     appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-                    await sendToQQ(key, plain);
+                    await sendToQQ(key, plain, { groupCap: true });
                     void sendNekoAfterReply(key, plain);
                   }
                 }
@@ -17061,6 +17253,7 @@ async function main(options = {}) {
     }).catch(() => {}).finally(() => {
       // 登录信息拿到（或失败）后再补历史：需要 selfUserId 区分「自己以前发的消息」。
       void runHistoryCatchUp('connect').catch((error) => log(`[history] 连接后补历史异常：${error?.message ?? error}`));
+      void runChatHistoryCatchUp('connect');
     });
     // 连接成功后顺手确认一下 token 是否已跟当前账号对齐；不一致就写回 config.json，
     // 让 MCP 工具（另一个进程）也能拿到正确的 token。
@@ -17282,6 +17475,7 @@ async function main(options = {}) {
     }
   }
 
+  loadQueued();
   startDshWatch();
   startSnowlumaWatch();
   const consoleServer = startConsoleServer();

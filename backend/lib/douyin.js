@@ -19,11 +19,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { STATE_DIR, findNodeExe, maskPath } from './paths.js';
-import { readJson, readUnified, saveUnified, writeJsonAtomic } from './store.js';
+import { readJson, readUnified, saveUnified, writeFileAtomic, writeJsonAtomic } from './store.js';
 import { DEFAULT_DOUYIN, normalizeDouyinConfig } from './douyin-config.mjs';
 import { VideoLimits } from '../vendor/douyin/video-limits.mjs';
 import { WatchMode } from '../vendor/douyin/watch-mode.mjs';
 import { normalizeMentionNames } from '../vendor/douyin/group-reply-trigger.mjs';
+import { dayKey } from '../../src/day-key.mjs';
 
 export const DOUYIN_DIR = path.join(STATE_DIR, 'douyin');
 export const DOUYIN_STATE_DIR = path.join(DOUYIN_DIR, 'state');
@@ -263,7 +264,7 @@ function pruneViewFile() {
     const stat = fs.statSync(VIEW_FILE);
     if (stat.size <= VIEW_MAX_BYTES) return;
     const lines = fs.readFileSync(VIEW_FILE, 'utf8').split('\n').filter(Boolean).slice(-1000);
-    fs.writeFileSync(VIEW_FILE, `${lines.join('\n')}\n`, 'utf8');
+    writeFileAtomic(VIEW_FILE, `${lines.join('\n')}\n`, { mode: 0o600 });
   } catch {}
 }
 
@@ -277,7 +278,7 @@ export function readDouyinHistory({ limit = 300 } = {}) {
       .map((line) => { try { return JSON.parse(line); } catch { return null; } })
       .filter(Boolean);
   } catch { items = []; }
-  const today = new Date().toLocaleDateString('sv-SE');
+  const today = dayKey();
   const weekAgo = Date.now() - 7 * 86400000;
   const stats = {
     today: items.filter((item) => String(item.at ?? '').slice(0, 10) === today).length,
@@ -411,7 +412,7 @@ async function saveCommentImages(items, { limit = 12 } = {}) {
         const buffer = Buffer.from(await response.arrayBuffer());
         if (buffer.length > 12 * 1024 * 1024) continue;
         const file = path.join(COMMENT_IMAGE_DIR, `${item.cid}-${index + 1}.jpg`);
-        fs.writeFileSync(file, buffer);
+        writeFileAtomic(file, buffer, { mode: 0o600 });
         item.images.push({ file, url, bytes: buffer.length });
         saved += 1;
       } catch { /* 单张失败不影响整批 */ }

@@ -28,7 +28,7 @@ import { pendingCount as attackPending } from '../tools/lib/attacks.mjs'
 import { pinOf, noteOf } from '../tools/lib/pins.mjs'
 import { markScheduleSlot } from '../tools/lib/night-schedule.mjs'
 import {
-  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, TIEBA_MJS,
+  BILI_ALIGNMENT_FILE, BILI_CONFIG, DSH_HOME, QQ_STATE_DIR, TIEBA_MJS,
 } from './paths.js'
 import { markTiebaPrompted, tiebaConfig, tiebaPromptDue } from './tieba.js'
 import { resolvePersonaFile } from './persona.js'
@@ -40,16 +40,19 @@ import { adminFromSources, adminPromptBlock } from '../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../src/character-persona.js'
 import { composePersonaLayers } from '../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js'
+import { writeJsonFileAtomic as writeJsonFileAtomicShared } from 'dsh-dfy-core/src/atomic-write.js'
+import { dayKey } from '../../src/day-key.mjs'
 
 // 当前角色的 B站 行为目录（角色系统未启用时回退旧目录）。
-function platformDir() {
-  const home = process.env.USERPROFILE || os.homedir()
-  const dshHome = process.env.DSH_HOME || path.join(home, '.dsh')
-  return activePlatformStateDir(path.join(dshHome, 'surfcore', 'bili'))
+// 数据根统一用 core paths.js 的 DSH_HOME（已处理 DSH_HOME / USERPROFILE 兜底），
+// 不再在这里自己拼一遍 —— 以前这里和别处各算一次，改过 DSH_HOME 的安装会读到不同目录。
+function biliHomeDir() {
+  return DSH_HOME
 }
 
-// 状态文件写入序号：同一进程内两次写同一文件不能落到同一个临时名上。
-let stateTmpSeq = 0
+function platformDir() {
+  return activePlatformStateDir(path.join(biliHomeDir(), 'surfcore', 'bili'))
+}
 
 /**
  * 状态文件原子写（临时文件 + rename）。
@@ -59,20 +62,10 @@ let stateTmpSeq = 0
  * JSON 半截 → readState() 的 catch 吞掉 → 返回 null → 当作"今天还没醒过"重算，
  * 轻则重复叫醒、重则把当天的 wakes 记账清零。断电/强杀同样会留下半截文件。
  *
- * 与 store.js 的 writeTextAtomic 同口径（tmp + rename），但不调用 ensureDirs()：
- * 这里每次 tick 都要写，没必要每次都去 mkdir 六个目录。
+ * 实现已收口到 atomic-write.mjs；这里只保留「写盘失败不打断 tick」的语义。
  */
 function writeJsonFileAtomic(file, value) {
-  const tmp = `${file}.${process.pid}.${++stateTmpSeq}.tmp`
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-    fs.renameSync(tmp, file)
-    return true
-  } catch {
-    try { fs.unlinkSync(tmp) } catch {}
-    return false
-  }
+  try { return writeJsonFileAtomicShared(file, value) } catch { return false }
 }
 
 // ── 合体后的统一上下文：一张人设卡 + 身份对齐 + QQ 脱敏记忆 ────────────────────
@@ -106,7 +99,7 @@ function personaCardBlock() {
   const file = resolvePersonaFile()
   const card = readTextFile(file)
   if (!card) {
-    const cfg = (() => { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.dsh', 'surfcore', 'bili.config.json'), 'utf8')) } catch { return {} } })()
+    const cfg = (() => { try { return JSON.parse(fs.readFileSync(path.join(biliHomeDir(), 'surfcore', 'bili.config.json'), 'utf8')) } catch { return {} } })()
     const p = cfg.persona ?? {}
     const bits = []
     if (p.name) bits.push(`你是「${p.name}」`)
@@ -177,9 +170,7 @@ function selfIdentityBlockForBili() {
  * QQ 和 B站 共用合体层的 admin 身份：B站 侧只读 B站 昵称/mid（不把 QQ 号带进 B站 提示词）。
  */
 export function adminBlockForBili() {
-  const home = os.homedir()
-  const dshHome = process.env.DSH_HOME || path.join(home, '.dsh')
-  const cfgPath = process.env.SURFCORE_BILI_CONFIG || path.join(dshHome, 'surfcore', 'bili.config.json')
+  const cfgPath = process.env.SURFCORE_BILI_CONFIG || BILI_CONFIG
   let bili = {}
   try { bili = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) } catch {}
   // 合体层还没写过 admin 时不能把默认空串当成"显式清空"，否则 B站 的 owner.mid 会被覆盖掉。
@@ -223,8 +214,8 @@ function identityContextLines() {
 function taToday() {
   try {
     const q = JSON.parse(fs.readFileSync(path.join(platformDir(), 'quota.json'), 'utf8'))
-    const t = new Date().toLocaleDateString('sv-SE')
-    return (q.log ?? []).filter((x) => x?.ta && new Date(x.at).toLocaleDateString('sv-SE') === t).length
+    const t = dayKey()
+    return (q.log ?? []).filter((x) => x?.ta && dayKey(x.at) === t).length
   } catch { return 0 }
 }
 
@@ -237,9 +228,7 @@ const limitsNow = () => freeLimits(config())
 // 2026-10-20：把"沉默"变成她【自己感觉到的事】—— 不是代码拦住她 ✗
 //   只给事实（冷了几天）+ 分档的自我建议；怎么写、什么心情，留给她 ✓
 function silenceLines() {
-  const home = os.homedir()
-  const dshHome = process.env.DSH_HOME || path.join(home, ".dsh")
-  const cfgPath = process.env.SURFCORE_BILI_CONFIG || path.join(dshHome, "surfcore", "bili.config.json")
+  const cfgPath = process.env.SURFCORE_BILI_CONFIG || BILI_CONFIG
   let cfg = {}
   try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) } catch {}
   let fb = {}
@@ -521,7 +510,7 @@ export function startScheduler(ctx, opts) {
   const readState = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return null } }
   const writeState = (o) => { writeJsonFileAtomic(STATE, o) }
   const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() }
-  const today = () => new Date().toLocaleDateString('sv-SE')
+  const today = () => dayKey()
 
   // ── 每日 token 额度闸门（2026-10-23）──────────────────────────────────
   // 额度不是「少发几条」，而是「今天 B站 不再叫醒」：到 100% 后所有 prompt 都不投，
@@ -569,7 +558,6 @@ export function startScheduler(ctx, opts) {
     const cands = [
       process.env.DSH_NODE,
       path.join(dshHome, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
-      path.join(os.homedir(), '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
     ]
     for (const c of cands) { try { if (c && fs.existsSync(c)) return c } catch {} }
     return process.execPath   // 兜底

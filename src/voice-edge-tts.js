@@ -180,6 +180,7 @@ function wsConnect({ host, path: wsPath, timeoutMs, onMessage, onOpen, onClose, 
       onOpen?.();
     }
     // 帧解析循环（必须处理 continuation 分片）
+    // loop-allow: WebSocket 帧解析；数据不完整时 return，收到 close 帧时 return
     for (;;) {
       if (buf.length < 2) return;
       const fin = (buf[0] & 0x80) !== 0;
@@ -332,7 +333,7 @@ async function fetchEdgeAudio(params) {
     if (/403|拒绝|时钟|鉴权/i.test(msg)) {
       try {
         const url = `https://${WSS_HOST}/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=${TRUSTED_CLIENT_TOKEN}`;
-        const resp = await fetch(url, { method: 'GET', headers: { 'User-Agent': EDGE_UA, 'Origin': EDGE_ORIGIN } });
+        const resp = await fetch(url, { method: 'GET', headers: { 'User-Agent': EDGE_UA, 'Origin': EDGE_ORIGIN }, signal: AbortSignal.timeout(15_000) });
         const dateHdr = resp.headers.get('date');
         if (adjustClockSkewFromDate(dateHdr)) {
           const r2 = await fetchEdgeAudioOnce(params);

@@ -13,6 +13,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write.mjs';
 import { CHARACTERS_DIR, SURFCORE_DIR, readCurrentCharacter } from './character-persona.js';
 
 const VERSION = 1;
@@ -120,10 +121,10 @@ export function writeAutoPersona(text, now = Date.now()) {
     if (previous) {
       const history = readJsonLines(paths.autoPersonaHistory).slice(-29);
       history.push({ at: now, text: previous });
-      fs.writeFileSync(paths.autoPersonaHistory, `${history.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+      writeFileAtomic(paths.autoPersonaHistory, `${history.map((row) => JSON.stringify(row)).join('\n')}\n`, { mode: 0o600 });
     }
     const stamp = new Date(now).toISOString();
-    fs.writeFileSync(paths.autoPersona, `<!-- 自动生成，勿手改；回滚见 角色 → 学习 -->\n<!-- updated: ${stamp} -->\n${body}\n`, 'utf8');
+    writeFileAtomic(paths.autoPersona, `<!-- 自动生成，勿手改；回滚见 角色 → 学习 -->\n<!-- updated: ${stamp} -->\n${body}\n`, { mode: 0o600 });
     return true;
   } catch {
     return false;
@@ -136,8 +137,8 @@ export function rollbackAutoPersona() {
     const history = readJsonLines(paths.autoPersonaHistory);
     const last = history.pop();
     if (!last) return { ok: false, error: '没有可回滚的人设快照' };
-    fs.writeFileSync(paths.autoPersonaHistory, `${history.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
-    fs.writeFileSync(paths.autoPersona, `<!-- 自动生成，已回滚 -->\n${last.text}\n`, 'utf8');
+    writeFileAtomic(paths.autoPersonaHistory, `${history.map((row) => JSON.stringify(row)).join('\n')}\n`, { mode: 0o600 });
+    writeFileAtomic(paths.autoPersona, `<!-- 自动生成，已回滚 -->\n${last.text}\n`, { mode: 0o600 });
     return { ok: true, text: last.text, at: last.at };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error) };

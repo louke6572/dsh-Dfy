@@ -10,6 +10,8 @@
  */
 
 // navPage = 设置页左侧导航里的页 id（lib/ui/02-shell.js）。
+// id 的顺序必须与 core 的 MODULE_IDS（packages/dsh-dfy-core/src/module-ids.js）一致：
+// store 保存时按那份清单裁剪键。module-audit.mjs 会检查两边不漂移。
 export const MODULES = [
   { id: 'bili', title: '养鱼（B站）', navPage: 'bili', description: 'B站观看、口味偏好、动态分享与观看历史。' },
   { id: 'tieba', title: '贴吧', navPage: 'tieba', description: '贴吧逛吧、发帖 / 评论 / 点赞 / 签到（BDUSS 登录）。' },

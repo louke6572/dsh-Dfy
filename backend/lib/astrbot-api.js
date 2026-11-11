@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readUnified } from './store.js';
+import { readUnified, writeFileAtomic } from './store.js';
 import { STATE_DIR } from './paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -280,7 +280,7 @@ export function createAstrbotApi({ log = () => {} } = {}) {
         model.provider_id = '';
       }
       conf.agent_runner.config.model = model;
-      fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+      writeFileAtomic(file, JSON.stringify(conf, null, 2), { mode: 0o600 });
       return { ok: true, needRestart: true };
     },
 
@@ -332,7 +332,7 @@ export function createAstrbotApi({ log = () => {} } = {}) {
       const cwd = c.cwd || path.join(os.homedir(), 'astrbot');
       const marker = path.join(cwd, 'data', '.dfy-persona-migrated');
       if (fs.existsSync(marker)) return { ok: false, reason: 'already' };
-      try { fs.mkdirSync(path.dirname(marker), { recursive: true }); fs.writeFileSync(marker, new Date().toISOString()); } catch {}
+      try { fs.mkdirSync(path.dirname(marker), { recursive: true }); writeFileAtomic(marker, new Date().toISOString(), { mode: 0o600 }); } catch {}
       // 读老角色：characters/current.json → {name, dir}
       let character = null;
       try {
@@ -443,7 +443,7 @@ function setActivePersonaIdImpl(cfg, id) {
   conf.agent_runner = conf.agent_runner ?? {};
   conf.agent_runner.config = conf.agent_runner.config ?? {};
   conf.agent_runner.config.persona = { ...(conf.agent_runner.config.persona ?? {}), persona_id: String(id) };
-  fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+  writeFileAtomic(file, JSON.stringify(conf, null, 2), { mode: 0o600 });
   return { ok: true, needRestart: true };
 }
 

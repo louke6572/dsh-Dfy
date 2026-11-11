@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readUnified } from './store.js';
+import { readUnified, writeFileAtomic } from './store.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -242,7 +242,7 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
     else list.push(entry);
     conf.provider = list;
     conf.provider_settings = { ...(conf.provider_settings ?? {}), enable: true };
-    fs.writeFileSync(file, JSON.stringify(conf, null, 2), 'utf8');
+    writeFileAtomic(file, JSON.stringify(conf, null, 2), { mode: 0o600 });
     log('[astrbot] DeepSeek provider 已写入 cmd_config.json');
     return { ok: true, needRestart: true };
   }

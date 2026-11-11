@@ -24,6 +24,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { writeFileAtomic } from './store.js';
 
 const GIT_TIMEOUT_MS = 30_000;
 // 仓库根（单仓库布局 backend/lib → ../..）
@@ -241,8 +242,8 @@ export function readInstalledMeta(dir) {
 export function writeInstalledMeta(dir, meta) {
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, '.installed-meta.json'), `${JSON.stringify({ ...meta, at: new Date().toISOString() }, null, 2)}
-`, 'utf8');
+    writeFileAtomic(path.join(dir, '.installed-meta.json'), `${JSON.stringify({ ...meta, at: new Date().toISOString() }, null, 2)}
+`, { mode: 0o600 });
   } catch {}
 }
 const releaseManifestCache = new Map(); // versionUrl -> { json, at }
@@ -1089,8 +1090,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         files[rel] = hash;
         bytes += fs.statSync(dst).size;
       }
-      fs.writeFileSync(path.join(dir, 'manifest.json'), `${JSON.stringify({ ...meta, txn, files, bytes, at: new Date().toISOString() }, null, 2)}
-`, 'utf8');
+      writeFileAtomic(path.join(dir, 'manifest.json'), `${JSON.stringify({ ...meta, txn, files, bytes, at: new Date().toISOString() }, null, 2)}
+`, { mode: 0o600 });
       return { ok: true, dir, files, bytes };
     } catch (error) {
       return { ok: false, code: 'backup.failed', reason: `备份失败：${String(error?.message ?? error).slice(0, 160)}` };
@@ -1261,8 +1262,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     try {
       const dir = path.join(stateDir, 'updates-applied');
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${Date.now()}-rollback-${want}.json`), `${JSON.stringify(record, null, 2)}
-`, 'utf8');
+      writeFileAtomic(path.join(dir, `${Date.now()}-rollback-${want}.json`), `${JSON.stringify(record, null, 2)}
+`, { mode: 0o600 });
     } catch {}
     if (ok) {
       return { ok: true, status: 'rolled_back', restored, version, message: `已回滚到 v${version}（${restored} 个文件）` };
@@ -1373,6 +1374,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           downloadProgress = { active: true, url: candidate, bytes: 0, total: totalBytes, percent: totalBytes ? 0 : null, speedBps: 0, startedAt };
           fh = fs.openSync(zipFile, 'w');
           let bytes = 0;
+          // loop-allow: 下载流读取；reader done 时 break，空闲超时 abort
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -1558,8 +1560,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     // 新的暂存 = 一次全新的尝试：清掉上一轮失败留下的 `.failed` 标记。
     // 不清的话，readLastApply() 会一直先命中 .failed，把之后成功的结果继续报成"失败"。
     try { fs.rmSync(`${pendingFile}.failed`, { force: true }); } catch {}
-    fs.writeFileSync(pendingFile, `${JSON.stringify(payload, null, 2)}
-`, 'utf8');
+    writeFileAtomic(pendingFile, `${JSON.stringify(payload, null, 2)}
+`, { mode: 0o600 });
     // 测试里不想真的起"等宿主退出"的进程时，设 SURFCORE_UPDATE_NO_SPAWN=1
     if (process.env.SURFCORE_UPDATE_NO_SPAWN === '1') return { ok: true, pid: null, pendingFile, spawned: false };
     const helper = String(process.env.SURFCORE_UPDATE_HELPER || '').trim() || path.join(REPO_ROOT, 'scripts', 'apply-update.mjs');
@@ -1793,8 +1795,8 @@ function resumePendingApply({ stateDir, pluginLog = () => {} } = {}) {
     try { fs.rmSync(started, { force: true }); } catch {}
     pending.waitPid = process.pid;
     pending.resumedAt = new Date().toISOString();
-    fs.writeFileSync(pendingFile, `${JSON.stringify(pending, null, 2)}
-`, 'utf8');
+    writeFileAtomic(pendingFile, `${JSON.stringify(pending, null, 2)}
+`, { mode: 0o600 });
     const helper = path.join(REPO_ROOT, 'scripts', 'apply-update.mjs');
     const child = spawn(process.execPath, [helper, '--pending', pendingFile], {
       detached: true, stdio: 'ignore', windowsHide: true, cwd: stateDir, env: helperSpawnEnv(),

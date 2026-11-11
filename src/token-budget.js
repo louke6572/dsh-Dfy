@@ -21,6 +21,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { dayKey } from './day-key.mjs';
+import { writeJsonFileAtomic } from './atomic-write.mjs';
 
 export const BUDGET_VERSION = 1;
 /** 80% 触发提醒；100% 才拦截。 */
@@ -198,12 +200,13 @@ export function localDayStart(now = Date.now()) {
   return d.getTime();
 }
 
-/** 本地日历日 key（YYYY-MM-DD）。额度按用户所在时区的自然日重置。 */
+/**
+ * 本地日历日 key（YYYY-MM-DD）。
+ * 用共享的北京时间口径：额度写入方与读取方（humanize-gate / 抖音 / 记账）
+ * 必须是同一个「今天」，否则非 UTC+8 的机器会出现「没用多少却额度已满」。
+ */
 export function localDayKey(now = Date.now()) {
-  const d = new Date(Number(now));
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${month}-${day}`;
+  return dayKey(now);
 }
 
 /** SurfCore 共享状态目录（默认 ~/.dsh/surfcore，可用 DSH_HOME 覆盖）。 */
@@ -224,10 +227,7 @@ function readJsonFile(file, fallback) {
 }
 
 function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2, 10)}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(tmp, file);
+  writeJsonFileAtomic(file, value, { mode: 0o600 });
 }
 
 export function budgetFileOf(dir) { return path.join(dir, BUDGET_FILES.budget); }

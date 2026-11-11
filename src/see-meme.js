@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 const PUNS = (() => {
   try {
@@ -178,7 +179,7 @@ export function createSeeMeme({ config = {}, cacheFile = '', log = () => {}, res
     saveTimer = setTimeout(() => {
       try {
         fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-        fs.writeFileSync(cacheFile, JSON.stringify(cache), { mode: 0o600 });
+        writeFileAtomic(cacheFile, JSON.stringify(cache), { mode: 0o600 });
       } catch (error) { log(`[看图] 缓存写入失败：${error?.message ?? error}`); }
     }, 800);
     saveTimer.unref?.();

@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readUnified, readJson, writeJsonAtomic, isPlainObject } from './store.js';
 import { TIEBA_DIR, TIEBA_CRED } from './paths.js';
+import { dayKey as beijingDayKey } from '../../src/day-key.mjs';
 import {
   agreePost, clearTiebaCookie, createThread, getAts, getSubReplies, getTiebaBduss,
   hasTiebaCookie, hotReplies, listBar, readThread, replyFloor, replySub, selfInfo,
@@ -217,12 +218,12 @@ function saveState(state) {
 }
 
 function dayKey(iso) {
-  try { return new Date(iso).toLocaleDateString('sv-SE'); } catch { return ''; }
+  try { return beijingDayKey(iso); } catch { return ''; }
 }
 
 function counts(actions) {
   const now = Date.now();
-  const today = new Date().toLocaleDateString('sv-SE');
+  const today = beijingDayKey();
   const out = {};
   for (const type of Object.keys(WRITE_LIMITS)) {
     const list = actions.filter((item) => item?.type === type);
@@ -446,7 +447,7 @@ export function readTiebaViewHistory({ limit = 200, q = '', days = 0, now = Date
     .filter((x) => !query || `${x.title} ${x.author} ${x.abstract}`.toLowerCase().includes(query))
     .sort((a, b) => new Date(b.at) - new Date(a.at));
 
-  const today = new Date(now).toLocaleDateString('sv-SE');
+  const today = beijingDayKey(now);
   const weekAgo = now - 7 * 86400_000;
   const actionTotals = { reply: 0, like: 0, post: 0 };
   for (const item of all) {
@@ -460,7 +461,7 @@ export function readTiebaViewHistory({ limit = 200, q = '', days = 0, now = Date
     total: all.length,
     actions: actionTotals,
     stats: {
-      today: all.filter((x) => new Date(x.at).toLocaleDateString('sv-SE') === today).length,
+      today: all.filter((x) => beijingDayKey(x.at) === today).length,
       last7d: all.filter((x) => new Date(x.at).getTime() >= weekAgo).length,
       read: all.filter((x) => x.mode === 'read').length,
       threads: new Set(all.map((x) => x.threadId).filter(Boolean)).size,

@@ -116,6 +116,7 @@ export async function synthesizeOnlineToFile({
   let buffer = '';
   let url = '';
   let failure = '';
+  // loop-allow: SSE 流读取；reader done 时 break
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;

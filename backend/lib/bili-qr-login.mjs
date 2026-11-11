@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { BILI_CRED, OWNER_BILI_CRED } from './paths.js';
 import { readBiliConfig, saveBiliConfig, saveUnified } from './store.js';
+import { biliCookieHeader } from '../../src/bili-api.js';
 
 const LOGIN_URL = 'https://passport.bilibili.com/login';
 const SESSION_TTL_MS = 170_000;      // B站 二维码大约 180 秒过期，留 10 秒余量
@@ -59,7 +60,7 @@ async function waitJson(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
       if (res.ok) return res.json();
     } catch {}
     await sleep(250);
@@ -192,11 +193,11 @@ async function waitForQrImage(cdp, timeoutMs) {
 }
 
 function cookieHeaderOf(cookies) {
-  const parts = [];
-  if (cookies.SESSDATA) parts.push(`SESSDATA=${cookies.SESSDATA}`);
-  if (cookies.bili_jct) parts.push(`bili_jct=${cookies.bili_jct}`);
-  if (cookies.buvid3) parts.push(`buvid3=${cookies.buvid3}`);
-  return parts.join('; ');
+  return biliCookieHeader({
+    sessdata: cookies.SESSDATA,
+    bili_jct: cookies.bili_jct,
+    buvid3: cookies.buvid3,
+  });
 }
 
 async function navAccount(cookies) {
@@ -397,7 +398,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
   let cdp = null;
   try {
     await waitJson(`http://127.0.0.1:${port}/json/version`, START_WAIT_MS);
-    const tabRes = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' });
+    const tabRes = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(5_000) });
     if (!tabRes.ok) throw new Error(`Edge 新建标签失败（HTTP ${tabRes.status}）`);
     const tab = await tabRes.json();
     cdp = await Cdp.connect(tab.webSocketDebuggerUrl);

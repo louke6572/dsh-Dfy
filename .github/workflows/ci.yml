@@ -84,6 +84,22 @@ jobs:
       - name: 出站安全审计
         run: node widget/tools/outbound-safety-audit.mjs
 
+      # 出站管道回归：把「每一个真实报过的问题」固化成用例（车轱辘话 / [sticker:] 漏字 /
+      # 全角 Markdown 乱码 / 群聊小作文 / 没叫我不接 …）。换模型前后跑一次就知道有没有回归。
+      - name: 出站管道回归
+        run: node widget/tools/outbound-pipeline-audit.mjs
+
+      # 跨模块口径：同一概念只能有一个实现（数据目录 / 今天 / 出站清洗 / 配置路径）。
+      # 专治「这里修好了、那里还漏着」导致的反复打补丁。
+      - name: 跨模块口径审计
+        run: node widget/tools/divergence-audit.mjs
+
+      # 功能模块审计（出站链路之外）：状态文件必须原子写、网络请求必须带超时、
+      # 原子写实现不得再复制、记忆可见性失败关闭。专治「配置被重置 / 扫码一直转圈 /
+      # 更新卡住 / 私聊记忆漏进群」这类非对话模块的问题。
+      - name: 功能模块审计（原子写 / 网络超时 / 记忆可见性）
+        run: node widget/tools/module-audit.mjs
+
       # 核心不变量审计（路由安全 / 接口对等 / 注入面 / CI）。--no-pack 避免在 CI 里跑 npm pack。
       - name: 核心不变量审计
         run: node widget/tools/ci-audit.mjs --no-pack

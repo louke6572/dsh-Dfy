@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { NodeApiClient, createTurnCollector, discoverDshLaunchToken } from '../../src/dsh-client.js';
 import { STATE_DIR } from './paths.js';
+import { writeFileAtomic } from './store.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const PREFERRED_PRESETS = ['qq-chat', 'qq-chat-v2'];
@@ -145,7 +146,9 @@ export function createQqBridgeChat({ ctx, log = () => {}, getBaseUrl, resolveMod
 
   /** 从 DSH 的工作区注册表里找出「agents」工作区 id（让 QQ 分会话出现在侧栏里）。 */
   function resolveWorkspaceId() {
-    const registryFile = path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+    // DSH 的 storages 会跟着 DSH_HOME 走；写死 ~/.dsh 时改过 DSH_HOME 的安装找不到工作区。
+    const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+    const registryFile = path.join(dshHome, 'storages', 'workspace.json');
     try {
       const doc = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
       const workspaces = doc?.tables?.workspaces ?? {};
@@ -250,7 +253,7 @@ export function createQqBridgeChat({ ctx, log = () => {}, getBaseUrl, resolveMod
   function savePersonaHashes() {
     try {
       fs.mkdirSync(path.dirname(personaStateFile), { recursive: true });
-      fs.writeFileSync(personaStateFile, `${JSON.stringify(personaHashes, null, 1)}\n`, 'utf8');
+      writeFileAtomic(personaStateFile, `${JSON.stringify(personaHashes, null, 1)}\n`, { mode: 0o600 });
     } catch { /* 写不了就只影响下次是否重复注入 */ }
   }
 

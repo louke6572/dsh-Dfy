@@ -19,13 +19,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
+import { readBiliConfig, readQqConfig, readUnified, writeFileAtomic, writeJsonAtomic } from './store.js';
 import { resolvePersonaFile } from './persona.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../src/character-persona.js';
 import { notePersonaActivity, personaPromptBlock } from '../../src/persona-state.js';
 import { learningPromptBlock } from '../../src/learning-profile.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
+import { prepareReply } from '../../src/outbound-reply.mjs';
 import { composePersonaLayers } from '../../src/persona-layers.js';
 import { adminFromSources } from '../../src/admin-identity.js';
 import { PET_DATA_DIR } from './paths.js';
@@ -102,7 +103,10 @@ export function clipForVoice(text, max = 120) {
 
 /** 模型偶尔会回「小肥鱼：xxx」/ 引号 / markdown；气泡里不需要这些壳。 */
 export function cleanReply(text) {
-  let out = String(text ?? '').trim();
+  // 桌宠气泡也是「模型输出直接给人看」的一个出口：走统一出站管道，
+  // 去 AI 味/表情标记/图片语法，避免 QQ 上干净、桌宠气泡里还留着乱码。
+  // 气泡是本地渲染，不需要本机路径脱敏（路径本身不构成泄漏，反而会显示成占位符）。
+  let out = prepareReply(text, { platform: 'pet', cleanClutter: true }).text;
   out = out.replace(/^```[a-zA-Z]*\n?/, '').replace(/```$/, '').trim();
   out = out.replace(/^\*\*([\s\S]+)\*\*$/, '$1').trim();
   out = out.replace(/^(小肥鱼|我|她)\s*[:：]\s*/, '').trim();
@@ -160,6 +164,7 @@ function localTimeText(at = Date.now()) {
   const d = new Date(at);
   const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
   const pad = (n) => String(n).padStart(2, '0');
+  // day-key-allow: 展示用本地时间戳（日期+时刻+星期），必须和本机时钟一致；不是「今天」口径。
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}（周${week}）`;
 }
 
@@ -217,8 +222,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const next = crypto.randomBytes(24).toString('hex');
     tokenCache = next;
     try {
-      fs.writeFileSync(tokenFile, next, { encoding: 'utf8', mode: 0o600 });
-      try { fs.chmodSync(tokenFile, 0o600); } catch {}
+      writeFileAtomic(tokenFile, next, { mode: 0o600 });
     } catch (error) {
       pluginLog('[pet-chat] 写 host-token 失败（本次运行内仍使用同一把内存令牌）：', String(error?.message ?? error));
     }
@@ -568,6 +572,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         serverTime: Date.now(),
       };
     }
+    // loop-allow: 桌宠事件长轮询；deadline 到点返回，循环内有 sleep
     while (true) {
       const fresh = events.filter((e) => e.id > known);
       if (fresh.length) {

@@ -7,6 +7,7 @@
 //   · 分享过的素材 6 天内不再复用（除非池子不够）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { dayKey } from './day-key.mjs';
 
 const DEFAULT_TIMES = ['07:00', '11:00', '13:00', '15:00', '17:00', '19:00', '21:00', '23:00'];
 
@@ -155,7 +156,7 @@ export function createBiliShareScheduler({
   }
 
   function dateKey(now = new Date()) {
-    return now.toLocaleDateString('sv-SE');
+    return dayKey(now);
   }
 
   function slotIndexOf(timeLabel) {

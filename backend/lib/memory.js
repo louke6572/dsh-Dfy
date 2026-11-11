@@ -30,7 +30,7 @@ import {
   addCandidate, listLinks, writeAlignmentBriefs,
 } from './align.js';
 import { activeMemoryPaths, activePlatformStateDir } from '../../src/character-persona.js';
-import { backupFile, readAll, readJson, writeJsonAtomic, writeTextAtomic } from './store.js';
+import { backupFile, readAll, readJson, writeFileAtomic, writeJsonAtomic, writeTextAtomic } from './store.js';
 
 const FEED_FILE = path.join(QQ_STATE_DIR, 'qq-public-feed.jsonl');
 const syncStateFile = () => path.join(activeMemoryPaths().dir, 'sync-state.json');
@@ -272,7 +272,7 @@ function appendAudit(entry) {
       const stat = fs.statSync(AUDIT_LOG);
       if (stat.size > 2 * 1024 * 1024) {
         const lines = fs.readFileSync(AUDIT_LOG, 'utf8').split('\n').filter(Boolean).slice(-2000);
-        fs.writeFileSync(AUDIT_LOG, `${lines.join('\n')}\n`);
+        writeFileAtomic(AUDIT_LOG, `${lines.join('\n')}\n`, { mode: 0o600 });
       }
     } catch {}
   } catch {}

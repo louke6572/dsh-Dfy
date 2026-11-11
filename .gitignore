@@ -43,3 +43,7 @@ QQ链路对比-*.md
 
 presets/*.patch.yml
 dsh/agent-presets/persona.system.md
+
+# B站评论区原始语料：第三方用户内容，只在本机做语感分析，不入库、不随包分发
+# （docs/human-corpus/stats.json 是聚合统计，可以入库）
+docs/human-corpus/*.jsonl

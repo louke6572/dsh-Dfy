@@ -8,6 +8,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { dayKey } from './day-key.mjs';
 
 const PROFILES = {
   quiet: { yesScore: 5, noScore: 2.5, replyProb: 0.1, halfUsd: 0.25, floor: 0.05, baseSec: 3 },
@@ -48,7 +49,8 @@ export function createHumanizeGate({ tokenUsageFile = null, log = () => {} } = {
     let cost = 0;
     try {
       const data = readJson(tokenUsageFile);
-      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      // 「今天」用共享口径（北京时间），与 token-budget / 抖音 / 记账文件一致。
+      const today = dayKey();
       // token-usage-daily.json 的 cost 是人民币（model-prices 的 currency=CNY），
       // 而配置里的 halfUsd 按美元写。这里换成美元再比，否则阈值会差 7 倍左右、
       // 花几毛钱就把接话意愿打到地板。汇率只影响软阈值的偏移，不参与计费。

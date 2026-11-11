@@ -22,6 +22,67 @@
 
 ---
 
+## 先看这里：30 秒选路线
+
+| 你想要什么 | 选哪个 | 需要额外准备 |
+|---|---|---|
+| 余额挂件 / 桌宠，不接 QQ | 只装 dsh-Dfy | DSH + Node.js |
+| QQ 聊天，越简单越好 | **内置版（默认）** | 自己准备 SnowLuma 安装包 |
+| 必须用 AstrBot 的插件（表情包 / 认主等） | AstrBot 版 | 独立 Python 环境 + AstrBot 本体 |
+
+拿不准就选**内置版**；AstrBot 版是可选的重型方案，装不上不影响挂件和桌宠。
+
+### 最短路径（只要挂件 / 桌宠）
+
+1. DSH → 插件页 → 添加插件，填 `github:louke6572/dsh-Dfy`，安装并**启用**；
+2. **完全退出 DSH**（托盘图标也要退出）再打开；
+3. 浏览器 `Ctrl+F5`，右下角出现小鲸鱼就完成。QQ、SnowLuma、AstrBot 都不用管。
+
+> 装完 **DSH 打不开了**？先别重装、别删 `~/.dsh`，直接看下面的「装崩了 / DSH 打不开：照着救」。
+
+### 安装前必须记住 5 条
+
+1. **只让 DSH / Agent 装 dsh-Dfy**；不要让它装 AstrBot、Python、SnowLuma 或系统依赖。
+2. 不要把任何东西装进 `~/.dsh/profiles`、`~/.dsh/plugins`、`~/.dsh/surfcore`（会锁坏正在运行的 DSH）。
+3. **SnowLuma 仓库已转私有，没有公开下载链接**；没有安装包就先只用挂件 / 桌宠。
+4. 内置版和 AstrBot 版只能二选一，不能同时接同一个 QQ。
+5. 改人格 / 配置后要**完全退出 DSH（托盘也退）**再打开，否则不生效。
+
+违反上面任何一条，最常见的后果就是**DSH 打不开**——不用重装系统，按下面的「装崩了」救回来。
+
+### 三个地方，先记住在哪
+
+| 你要找的东西 | 具体位置 |
+|---|---|
+| DSH 数据目录（配置 / 记忆 / 日志） | `C:\Users\<你的用户名>\.dsh`；按 `Win+R` 输入 `%USERPROFILE%\.dsh` 回车直接打开 |
+| 插件管理页（安装 / 启用 / 卸载） | 打开 DSH → 设置 → **插件** |
+| 本插件的设置页 | 打开 DSH → 设置 → 左侧列表里的 **dsh-Dfy** |
+
+### 名词一句话
+
+看不懂下面的词就先查这里，不用去搜：
+
+| 名词 | 一句话解释 |
+|---|---|
+| DSH | 你正在用的这个软件；插件都装在它里面 |
+| dsh-Dfy | 本插件：余额挂件 + 桌宠 + QQ 聊天 + 记忆 |
+| profile | DSH 的「用户配置文件夹」，在 `%USERPROFILE%\.dsh\profiles\` 下，常见 `desktop` / `web` |
+| 桥接 | 插件里负责「把 QQ 消息转给 DSH、再把回复发回 QQ」的那部分 |
+| SnowLuma | 第三方 QQ 登录程序；**接 QQ 才需要**，仓库已转私有，安装包自备 |
+| AstrBot | 第三方 QQ 机器人框架（Python 服务）；只有想要它的插件（表情包等）才装 |
+| OneBot / NapCat | 另一种 QQ 接入方式，切「直连」时用，不用 SnowLuma |
+| 诊断体检 | 设置页里的一键自检；红色项就是下一步要修的东西 |
+
+### 什么叫「完全退出 DSH」
+
+关掉窗口**不算**退出，插件和桥接还在后台跑，改了配置也不会生效：
+
+1. 看屏幕右下角托盘（图标可能被收进 `^` 里），找到 DSH 图标 → 右键 → **退出**；
+2. 按 `Ctrl+Shift+Esc` 打开任务管理器 → 搜索 `DSH` → 如果还有进程，右键 → **结束任务**；
+3. 重新打开 DSH。
+
+---
+
 ## 能做什么
 
 | 能力 | 说明 |
@@ -241,6 +302,17 @@ node scripts/uninstall.mjs --yes --purge-state   # 连配置、记忆、日志�
 
 ---
 
+## 安装后 3 分钟自检
+
+按顺序看，**停在哪一步就修哪一步**，不要一次改很多地方：
+
+1. **DSH 插件页**：能看到 dsh-Dfy，且状态是「已启用」。看不到 → 回安装步骤，装完重启。
+2. **浏览器 Ctrl+F5**：右下角出现小鲸鱼。没有 → 插件没加载，先看插件页和 DSH 是否重启。
+3. **设置 → dsh-Dfy → 维护 → 诊断体检**：点「重新体检」，红色项就是下一步要修的。
+4. **只要挂件 / 桌宠**：到这里就完成了，不需要 SnowLuma、不需要 AstrBot。
+5. **要接 QQ（内置版）**：维护 → SnowLuma，安装目录不能是「未设置」，并且能看到已登录的 QQ 号；没有 → 手动选择 SnowLuma 目录，再扫码。
+6. **要 AstrBot 版**：再加三项都绿——AstrBot 在线、6199 已接入、`dsh_bridge` 已启用。
+
 ## 第一次使用
 
 1. **余额**：配 `DEEPSEEK_API_KEY`，或在 DSH「设置 → 账号与余额」登录；鲸鱼旁出现数字即成功。
@@ -345,21 +417,128 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是**同一插件的两个入口
 
 ---
 
+## 装崩了 / DSH 打不开：照着救
+
+**先别做**：不要重装 DSH、不要删整个 `%USERPROFILE%\.dsh`、不要在打不开的情况下再装第二遍。
+
+配置、记忆、聊天记录都在 `%USERPROFILE%\.dsh\surfcore\`，下面的操作都**不会**动它。
+
+**第 1 步：彻底退干净**
+
+按上面「什么叫完全退出 DSH」做一遍，确认任务管理器里没有 `DSH` 进程。
+
+**第 2 步：看是哪个 profile 坏了**
+
+打开 `%USERPROFILE%\.dsh\profiles\`，里面通常有一到两个文件夹（如 `desktop`、`web`）。
+你平时用桌面版就是 `desktop`，用命令行 `dsh web` 就是 `web`。
+
+**第 3 步：把 dsh-Dfy 从 profile 里摘掉**
+
+用记事本打开 `%USERPROFILE%\.dsh\profiles\<profile>\package.json`，找到下面这两处，删掉 `dsh-dfy` 这一项（**只删这一项，其它字段保持原样，别删错逗号**）：
+
+```json
+{
+  "dependencies": { "dsh-dfy": "..." },
+  "dsh": { "profile": { "bundles": ["dsh-dfy"] } }
+}
+```
+
+> 上面只是示意片段。你的文件里还有 `name`、`version` 等别的字段，都不用动；只把 `dsh-dfy` 这个键 / 这一项删掉。
+
+保存后重新打开 DSH。能起来 → 就是插件装坏了，按「方式一」重装一次即可（配置和记忆都还在）。
+
+**不想手改**，也可以在 PowerShell 里跑（只会移除 dsh-Dfy，不碰配置和记忆）：
+
+```powershell
+dsh plugin --profile <profile> remove dsh-dfy
+```
+
+**第 4 步：还打不开，就换一个干净 profile**
+
+说明被改坏的不只 dsh-Dfy（通常是有人往 profile 里装过 AstrBot / Python / 别的包）：
+
+1. 把 `%USERPROFILE%\.dsh\profiles\<profile>` 整个文件夹改名，例如 `desktop-bak`；
+2. 重新打开 DSH，它会自己建一个新的 `desktop`（少数版本可能要重新登录一次账号）；
+3. 插件页里把 dsh-Dfy 重新装回来。此 profile 里的**其它插件需要重新启用**，但 `surfcore` 里的配置、记忆、聊天记录一条没丢；
+4. 旧文件夹先别删，确认没事了再删。
+
+**第 5 步：提醒自己**
+
+这次为什么崩：多半是让 Agent 在 DSH 目录里跑了 `npm` / `pip` / `pnpm`。下次只让它装 dsh-Dfy，AstrBot 和 Python 一律装到独立目录。
+
+---
+
+## 出问题：先回答这 5 个问题
+
+不要一上来就说「装不上」，先按顺序回答：
+
+1. **右下角有小鲸鱼吗？** 没有 → 插件没装好或没重启，先别管 QQ。
+2. **设置页有 dsh-Dfy 吗？** 没有 → 插件没启用，去插件页启用后完全退出 DSH 再打开。
+3. **你选的是内置版还是 AstrBot 版？** 不知道 → 默认内置版就够了。
+4. **SnowLuma 检测到了吗？** 没有 → 自己准备安装包后「手动选择」；没有包就先不接 QQ。
+5. **诊断体检哪一项是红的？** 只修那一项，改完再体检一次。
+
+把这 5 个答案一起发出来，基本能直接定位问题。
+
+**求助模板（直接复制填空）**
+
+```text
+1. 右下角有小鲸鱼吗：
+2. 设置页有 dsh-Dfy 且已启用吗：
+3. 内置版还是 AstrBot 版：
+4. SnowLuma 检测到了吗 / 有没有安装包：
+5. 诊断体检哪一项是红的：
+6. 报错原文（截图或文字）：
+```
+
 ## 常见问题
+
+### 有报错：按原文对
+
+先看报错里最像英文错误码的那一段，对上下表直接处理；对不上再看下一张表。
+
+| 报错原文（关键词） | 原因 | 怎么办 |
+|---|---|---|
+| `ERR_PNPM_IGNORED_BUILDS` | 安装时要跑构建脚本，被 pnpm 拦了 | 在报错给的 profile 目录跑 `pnpm approve-builds`；或在 `<profile>\pnpm-workspace.yaml` 的 `allowBuilds` 加 `dsh-dfy: true`，再装一次 |
+| `Cannot find module '@deepseek-ai/schemastery'` | 只装了包，没装依赖 | 进插件目录跑 `npm install`，或重跑方式二 |
+| `Cannot find module ...`（其它） | 同上，依赖不全 | 同上；还不行就删掉插件目录重装 |
+| `EPERM` / `EBUSY` / `resource busy or locked` | DSH 还开着，Windows 锁住了 `node_modules` | 按「完全退出 DSH」退干净，再装 |
+| `EADDRINUSE` / `:3080` 被占用 | DSH 开了两个，或别的程序占了 3080 | 关掉多余的 DSH 实例；确认只有一个在跑 |
+| `icon exceeds 256 KiB` | 装的是旧包 | 更新到最新 `main` 再装 |
+| `'git' 不是内部或外部命令` / `git: command not found` | 电脑没装 Git | 装 [Git for Windows](https://git-scm.com/download/win) 后重开 DSH 再装 |
+| `'dsh' 不是内部或外部命令` | 命令行找不到 DSH | 别用命令行，直接在 DSH 插件页安装；或到 DSH 安装目录里执行 |
+| `spawn ... ENOENT` 且提到 `python` | 想启动 AstrBot 但没装 Python | AstrBot 版才需要；改用内置版，或按「AstrBot 版」先自己装 Python |
+| 访问 GitHub 超时 / `ECONNRESET` | 网络问题 | 方式二脚本会自动换国内镜像；仍失败就挂代理后重试 |
+| `Repository not found` 且提到 SnowLuma | 正常：SnowLuma 仓库已转私有 | 停止尝试下载，自行准备安装包后「手动选择」 |
+
+### 没报错，但就是不对
 
 | 现象 | 处理 |
 |---|---|
-| 挂件不出现 | 确认不是用 `github:` 规格装的；按手动流程走完，再完全退出 DSH 重开 |
-| `Cannot find module '@deepseek-ai/schemastery'` | 没跑 `npm install` |
-| `icon exceeds 256 KiB` | 装的是旧版图标；更新到最新版 |
+| 右下角没有小鲸鱼 | ①插件页确认 dsh-Dfy 是「已启用」；②完全退出 DSH 再打开；③浏览器 `Ctrl+F5` |
+| 设置页没有 dsh-Dfy | 插件只是装了、没启用；去插件页启用后完全退出 DSH 再打开 |
+| 插件页搜不到 dsh-Dfy | 市场索引没收录；在「添加插件」里直接填 `github:louke6572/dsh-Dfy`，或添加本仓库的索引源 |
 | 余额显示 `--` / 提示未配置 | 配 `DEEPSEEK_API_KEY`，或登录 DSH 账号 |
-| 今日已用显示 `--` | 需要一次成功的余额观测，统计从那一刻开始 |
-| 保存报 403 | 只允许本机用 `127.0.0.1` 操作 |
+| 今日已用显示 `--` | 正常：需要至少一次成功的余额读取才开始统计 |
+| 保存报 403 | 必须用 `127.0.0.1` / `localhost` 打开 DSH，别用局域网 IP |
 | 找不到 SnowLuma | 仓库已转私有，无法自动下载；自行获取安装包后，在设置页「维护 → SnowLuma」手动指定目录；或切直连模式（自备 OneBot） |
 | 信封不出现 | 桥接未运行或 SnowLuma 未登录；扫码后点「重新检测」 |
+| 一条消息回两遍 | 内置版和 AstrBot 版同时接了 QQ；只留一个 |
 | QQ 卡片没声音 | 查卡片 🔊/🔇、全局音量、系统静音 |
+| 改了人格 / 配置不生效 | 完全退出 DSH（含托盘）再打开 |
 | 出现两个「Agent 预设定义」 | QQ 聊天与二代仿真两条预设，正常 |
-| 改了前端不生效 | `widget/assets/*` 热读取，硬刷新；改 `lib/`、`backend/`、`src/` 需重启 DSH |
+| 改了前端不生效 | `widget/assets/*` 硬刷新；改 `lib/`、`backend/`、`src/` 需重启 DSH |
+
+### 还是搞不定：把这些发出来
+
+不用描述，直接复制下面几样，别人一眼就能定位：
+
+1. 上面的「5 个问题」答案；
+2. 报错原文（截图或复制文字，**不要只写「报错了」**）；
+3. 日志文件 `%USERPROFILE%\.dsh\surfcore\qq\state\bridge.log`（最后 50 行就够）；
+4. 你的 DSH 是桌面版还是 `dsh web`，以及 `%USERPROFILE%\.dsh\profiles\` 下有哪几个文件夹。
+
+**发之前先删掉里面的 QQ 号、手机号、API Key。**
 
 ---
 

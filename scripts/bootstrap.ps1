@@ -146,8 +146,8 @@ try {
   Ok '已注册'
 } finally { Pop-Location }
 
-# ── 5. 装 SnowLuma（接 QQ 才需要）──────────────────────────────────────────
-Step 5 '安装 SnowLuma（QQ 运行时）'
+# ── 5. 检测 SnowLuma（接 QQ 才需要）────────────────────────────────────────
+Step 5 '检测 SnowLuma（QQ 运行时）'
 if ($env:DSHDFY_SKIP_SNOWLUMA -eq '1') {
   Bad '已跳过（DSHDFY_SKIP_SNOWLUMA=1）：只装挂件/桌宠'
 } else {
@@ -155,7 +155,7 @@ if ($env:DSHDFY_SKIP_SNOWLUMA -eq '1') {
   try {
     & $nodeExe (Join-Path $Dir 'scripts\install-snowluma.mjs') --no-launch
     if ($LASTEXITCODE -ne 0) {
-      Bad 'SnowLuma 安装失败（可稍后在设置页「安装与维护」里装，或重跑 node scripts\install-snowluma.mjs）'
+      Bad '未检测到 SnowLuma：仓库已转私有，无法自动下载。请自行准备安装包，再用设置页「维护 → SnowLuma → 手动选择」指定；不影响挂件/桌宠。'
     } else {
       Ok 'SnowLuma 就绪'
     }
@@ -163,10 +163,12 @@ if ($env:DSHDFY_SKIP_SNOWLUMA -eq '1') {
 }
 
 # ── 6. 下一步 ──────────────────────────────────────────────────────────────
-Step 6 '完成，只剩两步需要你'
+Step 6 '完成'
 Say ''
 Say '  1) 完全退出 DSH（托盘图标也要退出），再打开'
 Say '  2) 设置 → dsh-Dfy → 一键开始；第一次用 QQ 时在 SnowLuma 窗口扫码登录'
+Say '  3) 接 QQ 但还没 SnowLuma：自行准备安装包，设置页「维护 → SnowLuma → 手动选择」指定'
+Say '     （仓库已转私有，插件不自动下载；不影响挂件 / 桌宠）'
 Say ''
 Say "  安装目录：$Dir"
 Say '  出问题：设置 → dsh-Dfy → 诊断 → 重新体检，把标 ✗ 的那一项发给我。'

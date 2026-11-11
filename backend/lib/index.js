@@ -46,7 +46,7 @@ import { cancelTiebaQrLogin, pollTiebaQrLogin, startTiebaQrLogin } from './tieba
 import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import { createPlatformHub } from './platform-hub.js';
-import { createAstrbotSupervisor } from './astrbot-supervisor.js';
+import { createAstrbotSupervisor, unsafeDirReason } from './astrbot-supervisor.js';
 import { createAstrbotApi } from './astrbot-api.js';
 import { sendQqPrivate } from './qq-direct.js';
 import { createRawChat, openAiCompletion, openAiStreamChunks } from './dfy-raw-chat.js';
@@ -1526,7 +1526,8 @@ export function apply(ctx) {
       snowluma: {
         launcherPath: String(snow.launcherPath ?? ''),
         allowLaunch: snow.allowLaunch === true,
-        downloadUrl: String(snow.downloadUrl ?? 'https://github.com/SnowLuma/SnowLuma/releases/latest'),
+        // SnowLuma 仓库已转私有，不再提供公开下载地址；安装包由用户自行准备。
+        downloadUrl: String(snow.downloadUrl ?? ''),
         detected: findSnowLumaInstall().ok,
         everConnected: bridge?.snowluma?.everConnected === true,
         diagnosis: snowDiag,
@@ -5249,6 +5250,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       let cwd = '';
       try { cwd = String(readUnified().config.astrbot?.cwd || '').trim(); } catch { /* 读不到就按默认目录 */ }
       if (!cwd) cwd = path.join(os.homedir(), 'astrbot');
+      const unsafe = unsafeDirReason(cwd);
+      if (unsafe) return { ok: false, reason: 'unsafe-cwd', error: unsafe };
       // AstrBot 没初始化时别瞎建目录：先跑 astrbot init / 或者等守护进程拉起来
       if (!fs.existsSync(path.join(cwd, 'data', 'cmd_config.json'))) return { ok: false, reason: 'astrbot-not-initialized' };
       const dstDir = path.join(cwd, 'data', 'plugins', 'astrbot_plugin_dsh_bridge');

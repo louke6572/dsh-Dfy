@@ -24,6 +24,29 @@ const PROBE_TIMEOUT = 1500;
 const WATCH_INTERVAL = 30_000;
 const SPAWN_MIN_GAP = 90_000;
 
+const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+
+/**
+ * AstrBot 是独立 Python 服务，不能住在 DSH 的 profile / 插件 / 数据目录里：
+ * 那些目录会被 npm/pnpm 安装、插件升级、DSH 清理来回改动，装进去轻则被删，
+ * 重则锁住 node_modules 导致 DSH 起不来（2026-11 用户「让 DSH 自己装装崩」）。
+ */
+export function unsafeDirReason(dir) {
+  const target = path.resolve(String(dir || ''));
+  const blocked = [
+    path.join(DSH_HOME, 'profiles'),
+    path.join(DSH_HOME, 'plugins'),
+    path.join(DSH_HOME, 'surfcore'),
+  ];
+  for (const root of blocked) {
+    const rel = path.relative(root, target);
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+      return `AstrBot 目录不能放在 DSH 目录内（${root}）：依赖会被 DSH 安装/清理动到，可能把 DSH 一起弄崩。请换到独立目录，例如 %USERPROFILE%\\astrbot`;
+    }
+  }
+  return '';
+}
+
 function homeResolve(...parts) {
   return path.join(os.homedir(), ...parts);
 }
@@ -86,6 +109,7 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
     const probe = c.enabled ? await probePort(c.port) : { ok: false, error: 'disabled' };
     const cwd = resolveCwd(c);
     const initialized = fs.existsSync(path.join(cwd, 'data', 'cmd_config.json'));
+    const unsafe = unsafeDirReason(cwd);
     return {
       enabled: c.enabled,
       running: Boolean(probe.ok),
@@ -93,13 +117,14 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
       exe: resolveExe(c),
       cwd,
       initialized,
+      unsafe: Boolean(unsafe),
       spawnedByUs,
       lastSpawnAt: lastSpawnAt || null,
       lastError,
       probe: probe.ok ? { httpStatus: probe.httpStatus } : { error: probe.error },
       hint: !c.enabled
         ? 'AstrBot 网关已停用（配置 unified.astrbot.enabled）'
-        : (!initialized ? '还没初始化：跑一次 astrbot init（或点「初始化」）' : ''),
+        : (unsafe || (!initialized ? '还没初始化：跑一次 astrbot init（或点「初始化」）' : '')),
     };
   }
 
@@ -114,6 +139,12 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
     }
     const cwd = resolveCwd(c);
     const exe = resolveExe(c);
+    const unsafe = unsafeDirReason(cwd);
+    if (unsafe) {
+      lastError = unsafe;
+      log('[astrbot] ', unsafe);
+      return { ok: false, error: unsafe };
+    }
     if (!fs.existsSync(path.join(cwd, 'data'))) {
       lastError = `数据目录不存在：${cwd}（先 astrbot init）`;
       log('[astrbot] ', lastError);
@@ -183,6 +214,8 @@ export function createAstrbotSupervisor({ log = () => {} } = {}) {
     const key = String(apiKey ?? '').trim();
     if (!key) return { ok: false, error: 'key 不能为空' };
     const cwd = resolveCwd(c);
+    const unsafe = unsafeDirReason(cwd);
+    if (unsafe) return { ok: false, error: unsafe };
     const file = path.join(cwd, 'data', 'cmd_config.json');
     if (!fs.existsSync(file)) return { ok: false, error: `找不到 AstrBot 配置：${file}` };
     let conf;

@@ -61,6 +61,37 @@ QQ → SnowLuma（登录层，扫码 / 注入 QQ 进程）→ AstrBot（接入 +
   内置版用 0.7.4/0.7.5 的原版界面（平台/角色/对话/系统，含 QQ 旧桥页），AstrBot 版只留精简的「我的鱼」界面（概览 / 我的鱼 / 桌宠 / 维护），
   两边互不出现对方专属页面。
 
+### AstrBot 版（可选，最容易装错的一步）
+
+> **AstrBot 不是 DSH 插件，也不是 npm 包，是独立的 Python 服务。**
+> dsh-Dfy 只负责把 `dsh_bridge` 装进 AstrBot、校正 provider；**不负责装 Python、不负责装 AstrBot 本体**。
+
+正确顺序：
+
+1. **单独装 AstrBot**：独立目录 + 独立 Python 环境（例如 `%USERPROFILE%\astrbot`），按 [astrbot.app](https://astrbot.app/) 官方说明装；不要放进 `~/.dsh/profiles`、`~/.dsh/plugins` 或 `~/.dsh/surfcore`。
+2. 在该目录跑一次 `astrbot init`，再启动 AstrBot；浏览器打开它的 WebUI（默认 `127.0.0.1:6185`）确认能登录。
+3. 回到 DSH → dsh-Dfy → 维护 → AstrBot：填/识别 AstrBot 目录、WebUI 端口（6185）和可执行文件；点「初始化/启动」。
+4. 让 dsh-Dfy 自动安装 `dsh_bridge`（或手动在 AstrBot 插件页安装并**启用**），把 provider 指向 DSH。
+5. 概览 → QQ 运行方式 → 切到 **AstrBot 版**；重启 SnowLuma，让 QQ 走 6199 反向 WS 接进 AstrBot。
+6. 跑一遍「诊断体检」：AstrBot 运行、6199 接入、dsh_bridge、SnowLuma、内置桥应停止，五项都要绿。
+
+不要做：
+
+- **不要让 DSH Agent 在 `~/.dsh` 或插件目录里 `pip install` / `npm install` 装 AstrBot**：DSH 正在运行，Windows 会锁 `node_modules`，装到一半 DSH 可能直接起不来。
+- 不要把 AstrBot 目录设到 `~/.dsh/profiles`、`~/.dsh/plugins`、`~/.dsh/surfcore` 里面；插件会拒绝从这些目录拉起 AstrBot。
+- 不要同时让内置桥和 AstrBot 接同一个 QQ：会双回复/抢消息。二选一。
+- 不要把 6185（WebUI）和 6199（OneBot 反向 WS）搞混：前者是 AstrBot 面板，后者才是 QQ 接入。
+
+| 现象 | 先查什么 |
+|---|---|
+| AstrBot 面板打不开 | 目录是否初始化（`astrbot init`）、6185 是否被别的程序占用、Python 依赖是否装完 |
+| AstrBot 在跑但 QQ 没反应 | 6199 有没有 OneBot 连入；SnowLuma 是否重启过；AstrBot 版是否已切换 |
+| 有 QQ 消息但不经过 DSH | `dsh_bridge` 没装/没启用，或 provider 还在直连模型 |
+| 一条消息回两遍 | 内置桥没停，和 AstrBot 同时接 QQ |
+| DSH 起不来 / 依赖报错 | 是否有人把 AstrBot 或 Python 依赖装进了 DSH profile；换独立目录重装 |
+
+如果不需要 AstrBot 的插件生态（表情包、拟人插件等），直接用默认的**内置版**，少一层 Python、少一半故障点。
+
 ---
 
 ## 环境要求
@@ -70,7 +101,8 @@ QQ → SnowLuma（登录层，扫码 / 注入 QQ 进程）→ AstrBot（接入 +
 | 系统 | Windows 10 / 11 |
 | Node.js | ≥ 22.13 |
 | DSH | ≥ 0.2.1-rc.2（桌面端或 `dsh web`）；已在 0.2.2-rc.1 实测 |
-| SnowLuma | 只有接 QQ 需要；Agent 安装脚本会自动从官方 Releases 装 |
+| SnowLuma | 只有接 QQ 需要；仓库已转私有，不再提供公开下载；安装包需自行准备，再用设置页「手动选择」指定目录 |
+| AstrBot | 只有 AstrBot 版需要；独立 Python 环境（3.10+）+ 独立目录，**不要**装进 DSH profile/插件目录 |
 | 余额 | `DEEPSEEK_API_KEY` 或 DSH「账号与余额」登录，二选一 |
 
 不接 QQ / B站也能用：小鲸鱼与桌宠不依赖 SnowLuma。
@@ -116,21 +148,35 @@ dsh plugin --profile <profile> add github:louke6572/dsh-Dfy
 - 如果检测到旧版 clone 安装在仓库根留下的 `config.json` / `state/` / `roles/` / `pet/`，
   **只复制、不删除**到数据目录（升级不丢配置）。
 
-QQ 功能仍需要 SnowLuma（方式二会自动装；标准安装则在设置页或运行包内 `scripts/install-snowluma.mjs` 安装）。
+QQ 功能仍需要 SnowLuma，但它的仓库已经转私有，插件**不再自动下载**：需要你自己准备安装包，解压后在设置页「维护 → SnowLuma → 手动选择已安装的 SnowLuma」指定目录。没有 SnowLuma 也可以先用内置版挂件 / 桌宠。
 
-### 方式二：一行命令（Windows，含 SnowLuma）
+### 方式二：一行命令（Windows，自动装 dsh-Dfy）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/louke6572/dsh-Dfy/main/scripts/bootstrap.ps1 | iex"
 ```
 
 这一条会依次完成：下载到 `%USERPROFILE%\dsh-Dfy` → `npm install`（失败自动换国内镜像）→ 写入 DSH profile
-→ 安装 SnowLuma（官方 Releases）→ 生成 `config.json`。
+→ 检测本机有没有 SnowLuma → 生成 `config.json`。
+
+> SnowLuma 仓库已转私有，脚本**不会也不能**再下载它。没装 SnowLuma 时这一步会提示你手动准备，
+> 不影响挂件 / 桌宠；要接 QQ 再按下面「SnowLuma 安装包」处理。
 
 跑完只剩**两步**，都需你亲手做：
 
 1. **完全退出 DSH**（托盘图标也要退出），再打开；
 2. 设置 → dsh-Dfy → **一键开始**；第一次用 QQ 时在 SnowLuma 窗口**扫码登录**。
+
+#### SnowLuma 安装包
+
+SnowLuma 是第三方专有 QQ 运行时，仓库已转私有，**不再有公开 Releases 可自动下载**。接 QQ 时需要：
+
+1. 从你原来的渠道 / 作者那里拿到 SnowLuma 安装包（zip 或已解压目录）；
+2. 解压到独立目录（例如 `%USERPROFILE%\SnowLuma2`，里面有 `app`）；
+3. DSH → dsh-Dfy → 维护 → SnowLuma → **手动选择已安装的 SnowLuma**，选 `SnowLuma.exe`、`app\launcher.bat` 或根目录；
+4. 启动 SnowLuma，用手机 QQ 扫码登录。
+
+没有安装包时：直接用内置版挂件 / 桌宠；或者切到「直连」模式，用你自己的 OneBot 实现（NapCat 等）接 6199。
 
 可选环境变量（写在命令前面）：
 
@@ -149,6 +195,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/lou
 Agent 会跑同一套流程并自己处理报错；你仍然只做「重启 + 扫码」。重启必须由你做：
 Agent 通常就跑在 DSH 里，它自己重启会中断当前任务。
 
+> 只让 Agent 装 **dsh-Dfy 插件**。不要让它安装 AstrBot / Python 依赖，也不要在
+> `~/.dsh/profiles`、`~/.dsh/plugins`、`~/.dsh/surfcore` 里跑 `pip` / `npm` / `pnpm`——
+> 那会把正在运行的 DSH 依赖装坏。AstrBot 请按上面的「AstrBot 版」自己装到独立目录。
+
 ### 方式四：手动 clone（开发 / 排查用）
 
 ```powershell
@@ -156,7 +206,7 @@ git clone --depth 1 https://github.com/louke6572/dsh-Dfy.git
 cd dsh-Dfy
 npm install
 node scripts/setup-dsh.mjs
-node scripts/install-snowluma.mjs   # 接 QQ 才需要
+node scripts/install-snowluma.mjs   # 接 QQ 才需要；只检测，不再下载
 ```
 
 clone 安装与方式一使用**同一个数据目录**（`$DSH_HOME/surfcore/qq/`），所以两种安装可以互相切换，
@@ -194,7 +244,7 @@ node scripts/uninstall.mjs --yes --purge-state   # 连配置、记忆、日志�
 ## 第一次使用
 
 1. **余额**：配 `DEEPSEEK_API_KEY`，或在 DSH「设置 → 账号与余额」登录；鲸鱼旁出现数字即成功。
-2. **QQ（可选）**：装好 SnowLuma 并扫码登录后，打开 DSH 会自动拉起对应接入层（内置版直接连内置桥；AstrBot 版会拉起 AstrBot 并装好 `dsh_bridge`）；在 QQ 私聊发一句即可，回复会进 DSH 侧栏 `agents` 工作区的独立会话。设置页「维护 → 安装与维护」可看状态与体检。
+2. **QQ（可选）**：自行准备 SnowLuma 安装包并在设置页手动指定，扫码登录后，打开 DSH 会自动拉起对应接入层（内置版直接连内置桥；AstrBot 版会拉起 AstrBot 并装好 `dsh_bridge`）；在 QQ 私聊发一句即可，回复会进 DSH 侧栏 `agents` 工作区的独立会话。设置页「维护 → 安装与维护」可看状态与体检。
 3. **B站（可选）**：设置 → dsh-Dfy → 平台 → 养鱼（B站）→ 扫码；设互动频率与鱼群保护。不接就不会请求 B站接口。
 4. **记忆（可选）**：设置 → dsh-Dfy → 角色 → 记忆同步（记忆卡内置，不需要装第三方记忆插件）；模板在 `roles/`、`examples/`。
 
@@ -305,7 +355,7 @@ DSH「设置 → dsh-Dfy」与挂件内控制台是**同一插件的两个入口
 | 余额显示 `--` / 提示未配置 | 配 `DEEPSEEK_API_KEY`，或登录 DSH 账号 |
 | 今日已用显示 `--` | 需要一次成功的余额观测，统计从那一刻开始 |
 | 保存报 403 | 只允许本机用 `127.0.0.1` 操作 |
-| 找不到 SnowLuma | 跑 `node scripts/install-snowluma.mjs`；仍不行就在设置页手动指定目录 |
+| 找不到 SnowLuma | 仓库已转私有，无法自动下载；自行获取安装包后，在设置页「维护 → SnowLuma」手动指定目录；或切直连模式（自备 OneBot） |
 | 信封不出现 | 桥接未运行或 SnowLuma 未登录；扫码后点「重新检测」 |
 | QQ 卡片没声音 | 查卡片 🔊/🔇、全局音量、系统静音 |
 | 出现两个「Agent 预设定义」 | QQ 聊天与二代仿真两条预设，正常 |
@@ -376,7 +426,7 @@ scripts/   安装、更新、自检、发布
   余额 / 记账 / 峰谷 / 泡泡 / 音效与安全边界源自该项目。
 - **[PC2005-cloud](https://github.com/PC2005-cloud)**：`dsh-pet`（MIT），106 段动画、动作链与桌宠物理交互源自该项目。
 - **SurfCore**（[Mieksido/surfcore](https://github.com/Mieksido/surfcore)）：QQ / B站桥接、双向脱敏记忆、身份对齐。
-- **SnowLuma**：第三方 QQ 运行时，负责 QQ 登录与收发消息；专有软件，不随本仓库分发，只从官方 Releases 获取。
+- **SnowLuma**：第三方 QQ 运行时，负责 QQ 登录与收发消息；专有软件，不随本仓库分发。仓库已转私有，插件不再提供自动下载，安装包需自行准备。
 - **DSH**：插件宿主，提供 bundle / patch / client / MCP。
 - 社区贡献：Yang-huai406（Codex 迁移）、1llysviel（macOS）、0Sakura721、yybai25、Jy-EggRoll、
   VaeKaras、MengLs1620、ELFsay、ztzpro、under-the-ocean、21253soursweetlemon、fangbm、xiaolinnnnnnn。

@@ -1,19 +1,16 @@
-// install-snowluma.mjs — 让 Agent 自动装 SnowLuma（第三方 QQ 运行时）
+// install-snowluma.mjs — 检测本机 SnowLuma（第三方 QQ 运行时）
 //
 // 用法：
-//   node scripts/install-snowluma.mjs                 # 已有则复用；没有则下载官方 Releases 并解压
+//   node scripts/install-snowluma.mjs                 # 只检测；已安装则复用，没有就打印手动安装指引
 //   node scripts/install-snowluma.mjs --dir D:\SnowLuma2
-//   node scripts/install-snowluma.mjs --no-launch     # 只装不启动
-//   node scripts/install-snowluma.mjs --force         # 忽略已安装，重新下载
+//   node scripts/install-snowluma.mjs --no-launch     # 只检测不启动
+//   node scripts/install-snowluma.mjs --force         # 旧行为：尝试从 GitHub Releases 下载（仓库已转私有，通常会 404）
 //
-// 行为：
-//   1. 先用 backend/lib/snowluma-install.js 的规则检测已安装（配置路径 / 常见目录）
-//   2. 没装：从 github.com/SnowLuma/SnowLuma/releases/latest 找到 Windows zip（官方 Releases）
-//   3. 解压到目标目录（默认 %USERPROFILE%\SnowLuma2，路径不带中文/空格）
-//   4. 把 launcherPath / allowLaunch 写进仓库根 config.json
-//   5. 启动 launcher（默认；--no-launch 可跳过），剩下的只有「用户在窗口里扫码登录 QQ」
+// 背景（2026-11）：
+//   SnowLuma 仓库已转私有，不再有公开 Releases 可自动下载。本脚本默认**不再尝试下载**，
+//   只负责检测和写配置；安装包需要用户自行准备，再用设置页「手动选择」指定目录。
 //
-// 只下载官方 Releases，不碰第三方镜像；不修改任何用户数据。
+// 只使用官方来源，不碰第三方镜像；不修改任何用户数据。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,7 +48,7 @@ const launch = !argv.includes('--no-launch');
 // 官方发布物只有 Windows zip，解压还依赖 PowerShell 的 Expand-Archive。
 // 在其它平台上直接说清楚，而不是让用户看到 zip/Expand-Archive 的费解报错。
 if (process.platform !== 'win32') {
-  console.error('[snowluma-install] ERROR: 本脚本只支持 Windows（SnowLuma 官方 Releases 只提供 Windows 包）。');
+  console.error('[snowluma-install] ERROR: 本脚本只支持 Windows（SnowLuma 只提供 Windows 包）。');
   console.error('  macOS/Linux 请手动安装 SnowLuma，然后在设置页「安装与维护 → 手动选择」指定目录。');
   process.exit(2);
 }
@@ -141,13 +138,24 @@ if (!force) {
     startLauncher(found.launcher);
     process.exit(0);
   }
-  log('常见位置没有 SnowLuma，开始下载官方 Releases…');
+  log('常见位置没有 SnowLuma。');
+  log('SnowLuma 仓库已转私有，脚本不再自动下载安装包。');
+  log('请自行准备 SnowLuma（zip 或已解压目录），然后任选一种：');
+  log('  · 设置 → dsh-Dfy → 维护 → SnowLuma → 手动选择已安装的 SnowLuma；');
+  log('  · 或解压到 %USERPROFILE%\\SnowLuma2，再重跑本脚本（会自动检测到）。');
+  log('不接 QQ 可以忽略：挂件 / 桌宠不需要 SnowLuma；AstrBot 版也可切「直连」用自备 OneBot。');
+  process.exit(2);
 }
 
 // ── 2. 找最新版 Windows zip（用 releases 页面，避开 API 限流）────────────────
 async function resolveLatestTag() {
   const res = await fetch(RELEASES_LATEST, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`打不开 Releases 页面（HTTP ${res.status}）`);
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 403) {
+      throw new Error('SnowLuma 仓库已转私有，无法自动下载。请自行准备安装包，用设置页「手动选择」指定；或切直连模式用自备 OneBot。');
+    }
+    throw new Error(`打不开 Releases 页面（HTTP ${res.status}）`);
+  }
   const m = res.url.match(/\/releases\/tag\/([^/?#]+)/);
   if (!m) throw new Error(`无法从 ${res.url} 解析版本号`);
   return decodeURIComponent(m[1]);

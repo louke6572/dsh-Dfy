@@ -22,9 +22,7 @@ import { DOUYIN_DIR } from './douyin.js';
 import { readUnified } from './store.js';
 import { notePersonaActivity, personaPromptBlock } from '../../src/persona-state.js';
 import { learningPromptBlock } from '../../src/learning-profile.js';
-import { activeMemoryPaths, activePersonaFile, readCurrentCharacter, readPersonaLayerText } from '../../src/character-persona.js';
-import { composePersonaLayers } from '../../src/persona-layers.js';
-import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
+import { activeMemoryPaths, activePersonaFile, readCurrentCharacter } from '../../src/character-persona.js';
 import { appendMemoryInboxEvent } from '../../src/memory-card.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { createNekoStickers } from '../../src/nekowhale-stickers.mjs';
@@ -320,6 +318,7 @@ function ensureDouyinWorkspace() {
 // 注：DSH 的 workspace.insertSessionBefore 只能「在工作区内调整顺序」，
 // 不能把未记账的会话移进工作区（实测），所以老会话只能重建。
 const SESSION_MAP_FILE = path.join(IM_DIR, 'sessions.json');
+const PERSONA_SEEN_FILE = path.join(IM_DIR, 'persona-seen.json');
 
 /** key → DSH sessionId。DSH 建会话时可能改写 id，必须记下来，重启后才能接回。 */
 function readSessionMap() {
@@ -327,6 +326,21 @@ function readSessionMap() {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 function saveSessionMap(map) { writeJson(SESSION_MAP_FILE, map); }
+
+// 每个会话已经「见过」的人格版本。人格住进 preset 的 system prompt 后，
+// 对话里就不该再重复注入；只有老会话（烘焙前创建）或人格刚改过时补一次。
+function readPersonaSeen() {
+  const value = readJson(PERSONA_SEEN_FILE, {});
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function savePersonaSeen(map) { writeJson(PERSONA_SEEN_FILE, map); }
+function markPersonaSeen(key) {
+  const version = douyinPersonaFileKey();
+  if (!key || !version) return;
+  const map = readPersonaSeen();
+  map[key] = version;
+  savePersonaSeen(map);
+}
 
 /** DSH 是否把这个会话算在工作区里（只有记账的会话才会出现在侧栏）。 */
 function isSessionAccounted(workspaceId, sessionId) {
@@ -369,6 +383,13 @@ async function openChatSession(key) {
       try { await controller.state({ sessionId }); } catch { reusable = false; }
     }
     if (reusable && !isSessionAccounted(workspaceId, sessionId)) reusable = false;
+    // 人格版本变了 / 老会话没有版本记录：直接换新会话，让新的 preset system prompt 生效。
+    // 旧会话不删，仍留在侧栏；这个群的逐句历史不再续接，但记忆卡还在。
+    const personaVersion = douyinPersonaFileKey();
+    if (reusable && personaVersion && readPersonaSeen()[key] !== personaVersion) {
+      log(`人格版本已更新，为 ${key} 新建会话（旧会话保留）`);
+      reusable = false;
+    }
     if (!reusable) {
       const base = workspaceId
         ? { workspaceId, agentPreset: 'douyin-chat' }
@@ -387,6 +408,9 @@ async function openChatSession(key) {
       sessionId = actual;
       sessionMap[key] = actual;
       saveSessionMap(sessionMap);
+      // 新建的会话用的是当前 douyin-chat preset，system prompt 里已经烘焙了当前人格，
+      // 记下来，后续轮次就不用再往对话里塞人格。
+      markPersonaSeen(key);
       log(`已为 ${key} 新建 DSH 会话 ${actual}（挂到工作区 ${workspaceId || '(cwd)'}）`);
     }
     await applyControllerModel(controller, sessionId);
@@ -599,48 +623,20 @@ async function loadSdk() {
   return mod;
 }
 
-// ── 人格注入 ───────────────────────────────────────────────────────────────
-// 抖音会话的 preset 是固定的安全规则，不含角色人格（这一点和 QQ 不同：
-// QQ 桥接每条消息都会注入 roles/<角色>.md）。不补这一块，抖音里的回复就只剩
-// 「一个会用模型的客服」——没有身份、没有性格、也没有共同经历。
-// 这里按 mtime 缓存，人格卡一改下次回复就生效。
-let personaCache = { key: '', text: '' };
-// 人设/记忆/跨平台近况只在每个抖音会话第一次（或 6 小时后）注入，避免每轮重复塞几千字。
+// ── 人格版本 ───────────────────────────────────────────────────────────────
+// 人格已经烘焙进 douyin-chat preset 的 system prompt（见 preset-sync），
+// 对话正文里不再注入。这里只记录人格文件指纹，用来判断某个会话是不是该换新。
+// 人设/记忆/跨平台近况仍然只在每个抖音会话第一次（或 6 小时后）注入。
 const contextPrimed = new Map();
 
-function ownerDisplayName() {
-  try { return String(readUnified()?.config?.admin?.displayName || '').trim() || '主人'; } catch { return '主人'; }
-}
-
-function douyinPersonaBlock() {
-  let file = '';
-  try { file = String(activePersonaFile() || ''); } catch { file = ''; }
-  if (!file) return '';
-  let stat = null;
-  try { stat = fs.statSync(file); } catch { return ''; }
-  const key = `${file}:${stat.mtimeMs}:${stat.size}`;
-  if (personaCache.key === key) return personaCache.text;
-  let core = '';
-  try { core = fs.readFileSync(file, 'utf8').trim(); } catch { return ''; }
-  if (!core) return '';
+/** 人格文件指纹（路径 + mtime + size）。 */
+function douyinPersonaFileKey() {
   try {
-    let cur = null;
-    try { cur = readCurrentCharacter(); } catch { cur = null; }
-    const composed = composePersonaLayers({
-      core,
-      identity: buildPersonaIdentity({ name: personaNameFromCard(core, cur?.name || '这个角色'), owner: ownerDisplayName() }),
-      tone: readPersonaLayerText('tone'),
-      examples: readPersonaLayerText('examples'),
-      daily: readPersonaLayerText('daily'),
-      mode: 'v2',
-      maxChars: 6000,
-    }).text || core;
-    personaCache = { key, text: composed.trim() };
-    return personaCache.text;
-  } catch {
-    personaCache = { key, text: core };
-    return core;
-  }
+    const file = String(activePersonaFile() || '');
+    if (!file) return '';
+    const stat = fs.statSync(file);
+    return `${file}:${stat.mtimeMs}:${stat.size}`;
+  } catch { return ''; }
 }
 
 /** 记忆卡注入块（四个平台同一张卡；关闭记忆卡时返回空）。 */
@@ -660,6 +656,11 @@ function rememberConversation({ conversation, batch, reply }) {
     const paths = activeMemoryPaths();
     const now = Date.now();
     const factsMode = memoryRecordMode() !== 'chatlog';
+    // 写入口径和读取口径保持一致：抖音群聊是公开场合 → bili；私聊 → qq。
+    // 以前一律写 qq，导致群里自己都读不回来（公开版只认 bili/shared），
+    // QQ 那边又会把抖音群聊当成 QQ 群记忆。
+    const memoryPlatform = conversation.isGroup ? 'bili' : 'qq';
+    const memoryKind = conversation.isGroup ? 'group' : 'private';
     // 事实模式：只记「明确让她记住 / 提到偏好计划约定」的那一条，且不记她的回复。
     if (factsMode) {
       const lastUser = [...batch].reverse().find((item) => !item.event?.isSelf);
@@ -667,8 +668,8 @@ function rememberConversation({ conversation, batch, reply }) {
       if (!/(记住|记一下|记着|别忘|喜欢|讨厌|约定|答应|以后|生日|纪念日|名字|计划|打算|工作|学校|养了)/.test(text)) return;
       appendMemoryInboxEvent(paths, {
         at: now - 1,
-        platform: 'qq',
-        kind: conversation.isGroup ? 'group' : 'private',
+        platform: memoryPlatform,
+        kind: memoryKind,
         sender: senderNameOf(lastUser.event),
         senderId: String(lastUser.event?.senderUid ?? ''),
         groupId: conversation.isGroup ? conversation.key : '',
@@ -682,8 +683,8 @@ function rememberConversation({ conversation, batch, reply }) {
     for (const item of batch.slice(-2)) {
       appendMemoryInboxEvent(paths, {
         at: now - 1,
-        platform: 'qq',
-        kind: conversation.isGroup ? 'group' : 'private',
+        platform: memoryPlatform,
+        kind: memoryKind,
         sender: senderNameOf(item.event),
         senderId: String(item.event?.senderUid ?? ''),
         groupId: conversation.isGroup ? conversation.key : '',
@@ -696,8 +697,8 @@ function rememberConversation({ conversation, batch, reply }) {
     try { roleName = String(readCurrentCharacter()?.name || '').trim() || '她'; } catch { roleName = '她'; }
     appendMemoryInboxEvent(paths, {
       at: now,
-      platform: 'qq',
-      kind: conversation.isGroup ? 'group' : 'private',
+      platform: memoryPlatform,
+      kind: memoryKind,
       sender: roleName,
       isSelf: true,
       private: !conversation.isGroup,
@@ -1123,8 +1124,8 @@ async function flushBatch({ conversation, batch }) {
   const lines = batch
     .map((item) => `${senderNameOf(item.event)}：${item.text}`)
     .join('\n');
-  // 省 token：人设 / 记忆 / 跨平台近况只在本会话第一次（或 6 小时后）注入。
-  // 抖音会话历史里已经有这些内容，每轮重复注入会让输入越滚越大。
+  // 省 token：记忆 / 跨平台近况只在本会话第一次（或 6 小时后）注入；
+  // 人格已经在 preset 的 system prompt 里，不进对话正文。
   const primedAt = Number(contextPrimed.get(conversation.key) ?? 0);
   const needFullContext = !primedAt || Date.now() - primedAt > 6 * 3600_000;
   if (needFullContext) contextPrimed.set(conversation.key, Date.now());
@@ -1144,14 +1145,11 @@ async function flushBatch({ conversation, batch }) {
   // 梗百科：群里冒出生梗时先把那一条词条查好，别让模型硬猜（内置词库，不联网）
   const memeWikiBlock = memeWikiPromptBlock(lines, { key: conversation.key });
   if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
-  // 角色人格卡：抖音 preset 只有安全规则，没有「她是谁」。不补这块，回复就是通用助手腔。
-  // 每轮都注入，不只首轮：老会话（人格烘焙之前创建）的 system prompt 里没有任何人格，
-  // 一旦过了 6 小时窗口就只剩通用助手行为，表现就是「聊两句就露馅」。
-  // douyinPersonaBlock 按文件 mtime 缓存，重复调用不重复读盘。
-  const personaCore = douyinPersonaBlock();
+  // 人格已经烘焙进 douyin-chat preset 的 system prompt（见 preset-sync）。
+  // 人格版本变了（或老会话根本没有记录）会在 openChatSession 里直接换新会话，
+  // 对话正文里不再重复注入身份/语气/语料——避免每轮刷一大段人格。
   const prompt = [
     `【抖音会话】${conversation.displayName || '未知会话'}${conversation.isGroup ? '（群聊）' : '（私聊）'}`,
-    personaCore,
     memoryBlock,
     memoryRecallBlock,
     crossDigest,

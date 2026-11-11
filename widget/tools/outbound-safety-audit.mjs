@@ -269,6 +269,20 @@ ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
   } else ok('createTurnCollector 只保留最后一段文本');
 }
 
+// ── 10) 抖音人格：跟 preset 的 system prompt 走，不进对话正文 ───────────
+//     人格已烘焙进 douyin-chat preset；人格版本变了（或老会话没有记录）时
+//     直接换新会话，而不是每轮把整段身份卡塞进用户消息。
+{
+  const douyinSrc = read(path.join(ROOT, 'backend', 'lib', 'douyin-im.js'));
+  if (!/persona-seen\.json/.test(douyinSrc)) {
+    fail('[人格注入] 抖音没有 persona-seen 记录（无法判断会话人格版本）');
+  } else if (/douyinPersonaBlock|personaCore/.test(douyinSrc)) {
+    fail('[人格注入] 抖音又往对话正文里注入人格（输入会越滚越大）');
+  } else if (!/readPersonaSeen\(\)\[key\] !== personaVersion/.test(douyinSrc)) {
+    fail('[人格注入] 人格版本变了没有换新会话（新人格不会生效）');
+  } else ok('抖音人格跟 preset 走，版本变了直接换新会话');
+}
+
 // ── 结果 ──────────────────────────────────────────────────────────────
 for (const n of notes) console.log(`  ok   ${n}`);
 if (failures.length) {

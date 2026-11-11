@@ -448,4 +448,4 @@ ensureLocalModeFile();
 autoInstallProfileBundles();
 log('Done. 下一步：完全退出 DSH（含托盘）再打开 → 设置 → dsh-Dfy → 一键开始。');
 log('   · 一键开始会自动识别并拉起 SnowLuma、写入账号与 token、启动 QQ 桥接和 B站。');
-log('   · 需要你亲手做的只有一步：在 SnowLuma 窗口扫码登录 QQ（装 SnowLuma 可让 Agent 跑 install-snowluma）。');
+log('   · SnowLuma 仓库已转私有，需你自行准备安装包；装好后在设置页「维护 → SnowLuma → 手动选择」指定目录，再扫码登录 QQ。');

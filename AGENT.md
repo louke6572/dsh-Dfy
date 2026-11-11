@@ -1,7 +1,7 @@
 # AGENT.md — 给 AI Agent 的傻瓜安装手册
 
-> 目标：装好 dsh-Dfy，**用户只需要做两件事：重启 DSH、扫码登录 QQ**。
-> 其他（下载、依赖、写 profile、装 SnowLuma、启动桥接）全部由 Agent 完成。
+> 目标：装好 dsh-Dfy，**用户只需要做三件事：准备 SnowLuma 安装包、重启 DSH、扫码登录 QQ**。
+> 其他（下载、依赖、写 profile、启动桥接）由 Agent 完成；AstrBot / SnowLuma 本体不归 Agent 装。
 
 ## 复制给 Agent
 
@@ -16,10 +16,14 @@
    `$DSH_HOME/surfcore/qq/`，不写插件包目录；也可以 clone 后跑 `node scripts/setup-dsh.mjs`（两种方式共用同一个数据目录）。
 2. **不要自己重启/关闭 DSH**：你可能就跑在 DSH 里，重启会中断当前任务；只让用户手动退出再打开。
 3. **不要替用户扫码**：二维码必须用户本人在 SnowLuma 窗口扫。
-4. SnowLuma 下载：官方仓库 `github.com/SnowLuma/SnowLuma` 已于 2026-11 下线（404）。
-   插件不内置、不镜像、不改用第三方源；安装包由用户自行准备，再用设置页
-   「安装与维护 → 手动选择」指定已解压目录。下载后仍要用户本人扫码，不要替用户扫。
+4. SnowLuma 仓库已转私有（2026-11 起不再有公开 Releases，也无法自动下载）。
+   **不要尝试下载、镜像或改用第三方源**；安装包由用户自行准备（zip 或已解压目录），
+   装好后用设置页「安装与维护 → 手动选择」指定目录。下载后仍要用户本人扫码，不要替用户扫。
 5. 不要提交/外发 `config.json`、`~/.dsh/surfcore/`、`state/`、QQ/B站凭据。
+6. **不要安装 AstrBot、不要跑 `pip` / `npm` / `pnpm` 去改 DSH 自己的 profile**。
+   AstrBot 是独立 Python 服务，由用户装到独立目录（如 `%USERPROFILE%\astrbot`）；
+   在 `~/.dsh/profiles`、`~/.dsh/plugins`、`~/.dsh/surfcore` 里装东西会锁住/改坏
+   正在运行的 DSH，典型后果就是「装完 DSH 起不来」。详见下面「AstrBot（可选）」。
 
 ## 零、最省事：让 DSH 自己装
 
@@ -29,7 +33,35 @@ dsh plugin --profile <profile> add github:louke6572/dsh-Dfy
 
 装完只要让用户**完全退出 DSH 再打开**。首次启动自动建数据目录、生成初始配置；
 旧 clone 安装留在仓库根的数据会被**复制**（不删除）到 `$DSH_HOME/surfcore/qq/`。
-QQ 仍需要 SnowLuma：用下面的方式装，或在设置页指定已安装目录。
+QQ 仍需要 SnowLuma，但仓库已转私有、不再能自动下载：让用户自己准备安装包，
+解压后在设置页「维护 → SnowLuma → 手动选择」指定目录（或切直连模式用自备 OneBot）。
+
+> 这里的「自己装」只指 **dsh-Dfy 插件本身**。不要顺手把 AstrBot、Python 依赖、
+> 其它系统级软件也装进 DSH profile。
+
+## 零·B、AstrBot（可选）：不要让 Agent 在 DSH 目录里装
+
+AstrBot 不是 DSH 插件、不是 npm 包，是独立 Python 服务。只有用户明确要「AstrBot 版」
+（需要它的插件生态，如表情包）才处理；否则直接建议用默认内置版。
+
+必须按这个顺序，且由用户/在独立目录完成：
+
+1. 用户按 [astrbot.app](https://astrbot.app/) 官方说明，把 AstrBot 装到**独立目录**
+   （如 `%USERPROFILE%\astrbot`）+ 独立 Python 环境，跑一次 `astrbot init` 并启动。
+2. 你只在 dsh-Dfy 设置页「维护 → AstrBot」里填目录 / exe / WebUI 端口（默认 6185），
+   点启动；不要自己去 `pip install`。
+3. 让 dsh-Dfy 自动装 `dsh_bridge`（或让用户在 AstrBot 面板安装并启用），provider 指向 DSH。
+4. 让用户切到 AstrBot 版、重启 SnowLuma，再跑「诊断体检」。
+
+绝对不要：
+
+- 在 `~/.dsh/profiles`、`~/.dsh/plugins`、`~/.dsh/surfcore` 里 clone / `pip install` / `npm install`；
+- 改 DSH profile 的 `package.json` 或 `node_modules` 来「顺便装 AstrBot」；
+- 为了生效自己去重启/杀 DSH；
+- 把 AstrBot 目录配到上面这些 DSH 目录里（插件会拒绝拉起并提示换独立目录）。
+
+如果用户说「你帮我装 AstrBot」，正确回答是：**需要用户本人用官方安装器装到独立目录**，
+你可以在装完后帮他填设置、装 `dsh_bridge`、跑体检。
 
 ## 一、首选：一条命令装完
 
@@ -43,10 +75,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/lou
 2. 下载/更新仓库到 `%USERPROFILE%\dsh-Dfy`
 3. `npm install`（失败自动换国内镜像）
 4. `node scripts/setup-dsh.mjs`（自动识别 profile，写 bundle / 预设 / MCP / 生成 config.json）
-5. `node scripts/install-snowluma.mjs --no-launch`（检测或下载官方 Releases）
+5. `node scripts/install-snowluma.mjs --no-launch`（只检测；仓库已转私有，不会下载）
 
-**验收**：退出码 0，最后打印「完成，只剩两步需要你」。任何一步失败脚本都会打印 `[!!]` 并以**非 0 退出码**结束
-（别只看最后一行文字；`powershell -c "irm … | iex"` 的退出码就是脚本的退出码）。
+**验收**：必需步骤（下载/依赖/写 profile）失败会打印 `[!!]` 并以**非 0** 退出码结束；
+SnowLuma 检测不到只打黄字提示、**不阻塞**（仓库已转私有，安装包要用户自己准备）。
 
 只要挂件不接 QQ：命令前加 `$env:DSHDFY_SKIP_SNOWLUMA='1'`。
 只体检不安装：命令前加 `$env:DSHDFY_CHECK='1'`。
@@ -67,7 +99,7 @@ cd "$env:USERPROFILE\dsh-Dfy"; npm install
 # 3) 写进 DSH（自动识别 profile）
 node scripts/setup-dsh.mjs
 
-# 4) SnowLuma（接 QQ 才需要）
+# 4) SnowLuma（接 QQ 才需要；只检测，不下载；没有就让用户自己准备）
 node scripts/install-snowluma.mjs --no-launch
 
 # 5) 配置骨架（第 3 步一般已生成，缺了才跑）
@@ -111,8 +143,7 @@ dsh-Dfy 已安装。
 | `Cannot find module ...` | 回第 2 步 `npm install` |
 | `cannot resolve profile bundle` | 重启桌面端；或 `dsh plugin --profile <p> install` |
 | profile 被 Electron 独占 | 正常：`setup-dsh` 会提示跳过，重启桌面端即可 |
-| 找不到 SnowLuma | 重跑 `node scripts/install-snowluma.mjs`；仍失败用手动目录 `--dir D:\SnowLuma2` |
-| SnowLuma 下载失败 | 检查代理；仍不行让用户手动从官方 Releases 解压到 `%USERPROFILE%\SnowLuma2`，再重跑脚本 |
+| 未检测到 SnowLuma | 仓库已转私有、无法自动下载；让用户自行准备安装包，用设置页「手动选择」指定目录；或切直连模式用自备 OneBot |
 | 设置页 `icon exceeds 256 KiB` | 装的是旧包，更新到最新 main |
 | QQ 信封不出现 | 桥接未运行或未扫码：设置页「诊断 → 重新检测」 |
 | 余额显示 `--` / 未配置 | 配 `DEEPSEEK_API_KEY`，或在 DSH「账号与余额」登录 |

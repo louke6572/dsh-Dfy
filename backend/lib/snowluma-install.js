@@ -135,7 +135,7 @@ export function snowLumaMissingReport({ picked = '', tried = [] } = {}) {
     code: 'snowluma_not_found',
     title: '没找到 SnowLuma',
     error: '常见位置里都没有 SnowLuma（可能还没解压，或装在了别的目录）。',
-    hint: '点「浏览…」选 SnowLuma2 解压出来的根目录（里面有 app）；还没装就点「打开官方下载页」。',
+    hint: '点「浏览…」选 SnowLuma2 解压出来的根目录（里面有 app）。SnowLuma 仓库已转私有，插件不再提供下载；安装包需自行准备，或切直连模式用自备 OneBot。',
     tried,
   };
 }

@@ -167,9 +167,9 @@
   - 插件接管 SnowLuma（默认）：打开 DSH 自动拉起并重连，断线自动重试。
   - 直连（自备 OneBot，如 NapCat）：插件不拉起、不重启 SnowLuma，AstrBot 接 6199 端口。
   - 切换立即生效（`POST /astrbot/access-mode`）；当前架构、QQ 接入、QQ 连接文案随之变化。
-- **SnowLuma 官方仓库下线说明**：`github.com/SnowLuma/SnowLuma` 已于 2026-11 下线（404）。
+- **SnowLuma 官方仓库转私有**：`github.com/SnowLuma/SnowLuma` 已于 2026-11 转为私有仓库，不再有公开 Releases / 自动下载。
   插件不内置、不镜像、不改第三方源；安装包由用户自行准备，用设置页
-  「安装与维护 → 手动选择」指定已解压目录。
+  「安装与维护 → 手动选择」指定已解压目录。`install-snowluma` 默认只检测、不再尝试下载。
 
 ### 修复
 

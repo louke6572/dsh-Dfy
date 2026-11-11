@@ -282,16 +282,22 @@ export function readDailyUsage(dir, day = localDayKey()) {
   };
 }
 
-/** 写当天用量快照；total 永远由三类相加得出，避免调用方漏算。 */
+/**
+ * 写当天用量快照；分类键按 CATEGORY_SCOPES 展开，total 永远由所有分类相加得出。
+ *
+ * 2026-11-11：这里以前手写 `qq / bili / other` 三类。加抖音时只改了
+ * normalizeUsage 的 CATEGORY_SCOPES，漏改了这份手写清单 —— 于是
+ * token-usage-daily.json 里**永远没有 douyin 这一项**（总额却包含它）：
+ * 设置页看不到抖音花了多少，「按花费降低抖音接话意愿」也永远读到 0。
+ * 现在按 CATEGORY_SCOPES 动态展开，新增平台不会再漏。
+ */
 export function writeDailyUsage(dir, usage, { day = localDayKey(), at = Date.now(), source = 'surfcore-plugin', sessions } = {}) {
   const normalized = normalizeUsage(usage);
   const record = {
     day,
     at: Number(at),
     source,
-    qq: normalized.qq,
-    bili: normalized.bili,
-    other: normalized.other,
+    ...Object.fromEntries(CATEGORY_SCOPES.map((scope) => [scope, normalized[scope]])),
     total: normalized.total,
     sessions: isPlainObject(sessions) ? sessions : {}
   };

@@ -65,13 +65,16 @@ let humanizeGate = null;
 function humanizeOf() {
   humanizeGate ||= createHumanizeGate({
     tokenUsageFile: path.join(dshHomeDir(), 'surfcore', 'token-usage-daily.json'),
+    // 按花费降低意愿只看抖音自己的花费：以前读 data.qq.cost，
+    // QQ 聊得多就会把抖音群聊的接话意愿压到地板（表现为「群聊不回了」）。
+    scope: 'douyin',
     log,
   });
   return humanizeGate;
 }
 function douyinHumanizeConfig() {
-  const value = qqConfig()?.humanize;
-  return value && typeof value === 'object' ? value : {};
+  // 活人感配置和 QQ 共用同一份（qq/config.json 的 humanize 段）。
+  return qqHumanizeConfig();
 }
 let nekoSingleton = null;
 function nekoInstance() {
@@ -411,10 +414,8 @@ function settleChat(chat, reason) {
     waiter.reject(new Error(`回合出错：${String(reason.error?.message || reason.kind).slice(0, 200)}`));
     return;
   }
-  if (!reply) {
-    waiter.reject(new Error('这一轮没有产出文本（可能是工具调用被权限挡掉，或模型没回）'));
-    return;
-  }
+  // 正常结束但没有任何文本：常见于「模型只调了工具（发表情/看图）」。
+  // 这不是错误 —— 返回空串交给上层跳过，别把内部错误话术发到聊天里。
   waiter.resolve(reply);
 }
 
@@ -752,7 +753,8 @@ function askControllerChat(chat, text) {
       throw new Error('DSH 会话在等待人工确认，已取消本轮回复');
     }
     const reply = extractOutcomeReply(outcome);
-    if (!reply) throw new Error('这一轮没有产出文本（可能工具调用被权限挡掉，或模型没回）');
+    // 正常回合没文本（只调了工具 / 模型没说话）→ 返回空串，由上层静默跳过。
+    // 以前这里当错误抛出，导致往群里发「（我这边刚才没接上，你再说一次？）」这种机器人话术。
     return reply;
   });
   chat.chain = run.catch(() => {}).then(() => new Promise((resolve) => setTimeout(resolve, 50)));
@@ -1278,23 +1280,22 @@ async function handleMessage(event) {
     const mentionNames = config.mentionNames;
     const addressed = addressesUs(event, mentionNames);
     const humanizeCfg = douyinHumanizeConfig();
+    const text = textOf(event);
+    if (!text) return;
     if (conversation.isGroup && config.groupMentionOnly !== false && !addressed) {
       log(`群消息未点名，忽略 ${conversation.key}`);
       return;
     }
-    // 和 QQ 一样：关掉「只在被叫到时回」后，没点名的群消息按接话意愿决定接不接，
-    // 而不是把群里的每一句都回一遍。
+    // 和 QQ 一样：关掉「只在被叫到时回」后，没点名的群消息走同一套接话打分。
+    // 以前这里直接用 `replyProb × 意愿` 的扁平概率：正常问一句也只有 30%（花费高时 3%）
+    // 的概率回，看起来就像「群聊回复被锁了」。
     if (conversation.isGroup && config.groupMentionOnly === false && humanizeCfg.groupGate !== false && !addressed) {
-      const gate = humanizeOf();
-      const profile = gate.profileOf(humanizeCfg);
-      const chance = Math.max(0, Math.min(1, profile.replyProb * gate.willingness(humanizeCfg)));
-      if (Math.random() >= chance) {
-        log(`群消息没点名，按接话意愿不接 ${conversation.key}（${Math.round(chance * 100)}%）`);
+      const verdict = humanizeOf().scoreGroup({ text, addressed: false, cfg: humanizeCfg });
+      if (!verdict.reply) {
+        log(`群消息没点名，接话打分 ${verdict.score}（${verdict.reasons.join('、')}）不接 ${conversation.key}`);
         return;
       }
     }
-    const text = textOf(event);
-    if (!text) return;
     // 有人在跟她说话（不一定是主人）：计入「有社交接触」，让沉默推导更准。
     notePersonaActivity({ kind: 'contact' });
     const messageId = messageIdOf(event);
@@ -1411,6 +1412,12 @@ async function flushBatch({ conversation, batch }) {
   try {
     const chat = await openChatSession(conversation.key);
     const reply = await askChat(chat, prompt);
+    // 正常回合但没有文本（常见：模型只调用了发表情/看图工具）→ 静默跳过。
+    // 工具副作用已经发生，不能再补一句「没接上」的机器人话术。
+    if (!String(reply ?? '').trim()) {
+      log(`本轮没有文本输出（可能只调用了工具），跳过发送 ${conversation.key}`);
+      return;
+    }
     // 统一出站管道：抽表情/图片、去 AI 味、抖音去 Markdown、群聊限长、脱敏、
     // 以及「没叫我，不接」这类决定文本的拦截（与 QQ 同一份规则）。
     const prepared = prepareReply(reply, {
@@ -1422,7 +1429,10 @@ async function flushBatch({ conversation, batch }) {
       allowSilence: true,
     });
     const text = prepared.text;
-    if (!text && !prepared.images.length) throw new Error('回复为空');
+    if (!text && !prepared.images.length) {
+      log(`清洗后没有可发内容，跳过发送 ${conversation.key}`);
+      return;
+    }
     // 群里决定不接时，不要把这句「没叫我，不接」当回复发出去。
     if (prepared.silent) {
       const ids = readReplied();
@@ -1432,7 +1442,10 @@ async function flushBatch({ conversation, batch }) {
       return;
     }
     const bubbles = splitBubbles(text, { group: conversation.isGroup });
-    if (!bubbles.length && !prepared.images.length) throw new Error('回复为空');
+    if (!bubbles.length && !prepared.images.length) {
+      log(`拆条后没有可发内容，跳过发送 ${conversation.key}`);
+      return;
+    }
     const latest = batch.at(-1).event;
     // 拆条连发：真人不会把一屏话塞进一个气泡。条与条之间按条长停一下，像在打第二句。
     for (let i = 0; i < bubbles.length; i += 1) {
@@ -1469,11 +1482,8 @@ async function flushBatch({ conversation, batch }) {
     }
     runtime.error = String(error?.message ?? error).slice(0, 240);
     log(`回复 ${conversation.displayName} 失败：${runtime.error}`);
-    // 失败时不要让对方干等：回一句可操作的兜底（发送本身失败时这次也会失败，忽略即可）。
-    try {
-      const lastEvent = batch.at(-1)?.event;
-      if (lastEvent?.reply) await lastEvent.reply('（我这边刚才没接上，你再说一次？）');
-    } catch { /* 兜底提示发不出去也不影响主流程 */ }
+    // 失败只写日志 / 面板（runtime.error），**不再往聊天里发**「没接上，你再说一次？」。
+    // 那句话是内部兜底话术：格式像旁白、会被当成角色说的话，失败一次就刷一次，很出戏。
     throw error;
   }
 }

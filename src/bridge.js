@@ -9297,7 +9297,7 @@ async function main(options = {}) {
   const contextPrimed = new Map(); // key -> 注入时间
   let humanizeGateInstance = null;
   function humanizeGate() {
-    humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(SURFCORE_DIR, 'token-usage-daily.json'), log });
+    humanizeGateInstance ||= createHumanizeGate({ tokenUsageFile: path.join(SURFCORE_DIR, 'token-usage-daily.json'), scope: 'qq', log });
     return humanizeGateInstance;
   }
   // 成熟表情插件（dsh-nekowhale-stickers）返回的是 Markdown 图片行：

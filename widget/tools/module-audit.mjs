@@ -271,6 +271,51 @@ if (biliCookieOffenders.length) {
   for (const f of biliCookieOffenders) fail(`[B站凭据] ${f} 自己拼了 Cookie 头；请用 bili-api.js 的 biliCookieHeader()`);
 } else ok('B站 Cookie 头只有 bili-api.js 一份拼装');
 
+// ── 9) 群聊接话打分只能有一个实现 ────────────────────────────────────────
+// 抖音曾经用 `replyProb × willingness` 的扁平概率代替打分：正常问一句也只有 30%
+// （花费高时 3%）的概率回，用户看到的就是「群聊回复被锁了」。现在两边共用 scoreGroup()。
+const gateFile = readAll(path.join(ROOT, 'src/humanize-gate.mjs'));
+const douyinIm = readAll(path.join(ROOT, 'backend/lib/douyin-im.js'));
+if (!/function\s+scoreGroup\s*\(/.test(gateFile)) {
+  fail('[接话打分] humanize-gate.mjs 没有 scoreGroup()：QQ 与抖音无法共用同一套打分');
+} else if (/replyProb\s*\*\s*[A-Za-z_$][\w$]*\.willingness/.test(douyinIm)) {
+  fail('[接话打分] 抖音又用扁平概率 replyProb × willingness 决定接不接；请改用 scoreGroup()');
+} else if (!/\.scoreGroup\s*\(/.test(douyinIm)) {
+  fail('[接话打分] 抖音群聊没有使用共享的 scoreGroup()');
+} else ok('群聊接话打分只有 scoreGroup() 一份实现（QQ / 抖音共用）');
+
+// ── 10) 用量分类不得手写清单 ─────────────────────────────────────────────
+// 加抖音时只改了 normalizeUsage 的 CATEGORY_SCOPES，漏改了 writeDailyUsage 里手写的
+// `qq / bili / other` —— 当日用量文件里永远没有 douyin（总额却包含它）。
+const tbSrc = readAll(path.join(ROOT, 'src/token-budget.js'));
+if (!/CATEGORY_SCOPES\.map/.test(tbSrc) || /qq:\s*normalized\.qq/.test(tbSrc)) {
+  fail('[用量分类] src/token-budget.js 的 writeDailyUsage 又在手写分类清单；请按 CATEGORY_SCOPES 展开');
+} else ok('当日用量快照按 CATEGORY_SCOPES 动态展开（新增平台不会漏）');
+
+// ── 11) 内部错误话术不得发进聊天 ─────────────────────────────────────────
+// 失败/空回合时把「（我这边刚才没接上，你再说一次？）」这种旁白当消息发出去，
+// 用户会以为角色本人在说胡话；而且失败一次刷一次。只允许写日志 / 面板。
+const CANNED_CHAT_ERRORS = [
+  '（我这边刚才没接上',
+  '（我这边刚才没想出来',
+  '（她那边没接上',
+];
+const cannedOffenders = [];
+for (const file of files.concat([path.join(ROOT, 'astrbot-plugins/astrbot_plugin_dsh_bridge/main.py')])) {
+  const lines = readAll(file).split(/\r?\n/);
+  for (const line of lines) {
+    const text = line.trim();
+    // 注释里可以引用这句话说明历史原因，只检查真正会发出去的字面量。
+    if (!text || text.startsWith('//') || text.startsWith('*') || text.startsWith('/*') || text.startsWith('#')) continue;
+    for (const phrase of CANNED_CHAT_ERRORS) {
+      if (text.includes(phrase)) cannedOffenders.push(`${rel(file)} → ${phrase}`);
+    }
+  }
+}
+if (cannedOffenders.length) {
+  for (const item of cannedOffenders) fail(`[出戏兜底] ${item}：内部错误话术不能作为聊天消息发出；请只写日志/面板`);
+} else ok('失败兜底只写日志，不把内部错误话术发进聊天');
+
 // ── 结果 ────────────────────────────────────────────────────────────────
 for (const n of notes) console.log(`  ok   ${n}`);
 if (failures.length) {

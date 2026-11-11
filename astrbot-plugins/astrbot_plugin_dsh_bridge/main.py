@@ -110,12 +110,12 @@ class DshBridge(Star):
         }
         try:
             data = await asyncio.to_thread(_post_json, base + api, payload, token, timeout_s)
-        except Exception as exc:  # 网络/超时：日志留细节，聊天里只回固定话术（不回吐内部信息）
+        except Exception as exc:  # 网络/超时：只写日志，不往聊天里发内部错误话术
             logger.warning(f"[dsh-bridge] 调用 DSH 失败：{exc!r}")
-            return "（她那边没接上，稍后再试一次）"
+            return ""
         if not data.get("ok"):
             logger.warning(f"[dsh-bridge] DSH 返回错误：{str(data.get('error'))[:200]}")
-            return "（她那边出错了：在 DSH 设置 → 维护 → 诊断体检里看是哪一步）"
+            return ""
         return str(data.get("reply") or "").strip()
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -156,5 +156,7 @@ class DshBridge(Star):
         if reply:
             yield event.plain_result(reply)
         else:
-            # 大脑返回空串时以前什么都不发 → 用户以为被无视。给一句可操作的兜底。
-            yield event.plain_result("（我这边刚才没想出来，你再说一次？）")
+            # 空回复 / 调用失败：静默跳过，只写日志。
+            # 以前这里发「（我这边刚才没想出来，你再说一次？）」—— 失败一次刷一次，
+            # 格式像旁白，会被当成角色本人说的话，很出戏。
+            logger.info("[dsh-bridge] 本轮没有文本输出，跳过发送")

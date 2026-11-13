@@ -17,8 +17,21 @@ import fs from 'node:fs';
 import { buildPatches, patchFileFor, PRESETS, PERSONA_SNAPSHOT_FILE } from '../../scripts/build-agent-preset-patches.mjs';
 import { composePersonaLayers } from '../../src/persona-layers.js';
 import { activePersonaFile, readCurrentCharacter, readPersonaLayerText } from '../../src/character-persona.js';
+import { readAutoExamples } from '../../src/chat-corpus.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../src/persona-identity.js';
 import { writeFileAtomic } from './store.js';
+
+/**
+ * 语料层 = 手写语料 + 自动回流语料。
+ * 分开存是为了互不覆盖：手写那份主人随时能改，回流那份由桥接自动维护（src/chat-corpus.js）。
+ */
+function composedExamples() {
+  const manual = readPersonaLayerText('examples').trim();
+  let auto = '';
+  try { auto = readAutoExamples().trim(); } catch { /* 回流不可用就只用手写语料 */ }
+  if (!auto) return manual;
+  return `${manual}\n\n${auto}`.trim();
+}
 
 /** 组装「烘进 system prompt 的稳定人格」。易变内容（近况/心情/记忆卡）不在这里。 */
 export function composePersonaSystemPrompt({ ownerName = '主人', maxChars = 12000 } = {}) {
@@ -37,7 +50,7 @@ export function composePersonaSystemPrompt({ ownerName = '主人', maxChars = 12
   const composed = composePersonaLayers({
     core: personaCore,
     tone: readPersonaLayerText('tone'),
-    examples: readPersonaLayerText('examples'),
+    examples: composedExamples(),
     identity,
     personaMode: 'full',
     mode: 'v1',

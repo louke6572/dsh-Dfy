@@ -20,7 +20,7 @@ import path from 'node:path';
 import { readWatchHistory } from '../tools/lib/watch-history.mjs';
 import { readDouyinHistory, douyinComments, douyinStatus } from './douyin.js';
 import { readUnified } from './store.js';
-import { readLearningProfile, writeLearningProfile, writeAutoPersona, learningPaths } from '../../src/learning-profile.js';
+import { readLearningProfile, writeLearningProfile, writeAutoPersona, learningPaths, sanitizeLearningText } from '../../src/learning-profile.js';
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -57,6 +57,15 @@ function whenAt(value) {
 
 function short(value, max) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * 模型完全没给 JSON 时的正文兜底：只接受像人话的内容。
+ * 直接把 lastRaw 当近况会写进 `{"profile":...}` 这种半截 JSON，
+ * 之后每轮都当【你最近的状态】注入（2026-11-13 实测）。
+ */
+function readableFallback(raw, max) {
+  return sanitizeLearningText(raw, max);
 }
 
 /** 各平台的历史 → 统一结构（只取游标之后的新内容）。 */
@@ -401,27 +410,28 @@ export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } =
         data = parsed.data;
         partial = parsed.partial;
       } else {
-        // 兜底：模型完全没按格式来，就把正文当“近况”，至少让她有一点新东西。
+        // 兜底：模型完全没按格式来，只把它当“近况”。JSON 骨架/代码块会被
+        // readableFallback 丢掉——宁可这次没有近况，也不能把乱码写进每轮提示词。
         data = {
           experiences: [],
           interests: [],
-          persona: short(lastRaw, 240),
-          brief: short(lastRaw, 120),
+          persona: readableFallback(lastRaw, 240),
+          brief: readableFallback(lastRaw, 120),
         };
         partial = true;
-        log('[learning] 模型未按 JSON 返回，改用正文兜底');
+        log(`[learning] 模型未按 JSON 返回，改用正文兜底（${data.persona ? '保留正文' : '正文不可用，已丢弃'}）`);
       }
       const now = Date.now();
       const experiences = [];
       for (const row of data.experiences.slice(0, 6)) {
         const platform = String(row?.platform || '');
-        const body = short(row?.text, 110);
+        const body = readableFallback(row?.text, 110);
         if (!['bili', 'douyin'].includes(platform) || !body) continue;
         experiences.push({ platform, text: body, at: now });
       }
       const interests = data.interests.map((x) => short(x, 14)).filter(Boolean).slice(0, 6);
-      const persona = short(data.persona, 300);
-      const brief = short(data.brief, 200);
+      const persona = sanitizeLearningText(data.persona, 300);
+      const brief = sanitizeLearningText(data.brief, 200);
       const cursors = { ...profile.cursors };
       for (const item of items) {
         const current = Number(cursors[item.platform]) || 0;

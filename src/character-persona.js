@@ -133,6 +133,10 @@ export function characterPaths(id) {
     personaTone: path.join(dir, 'persona.tone.md'),
     // 语料层（few-shot）：一大段示例对话单独放，避免把核心人格撑成好几千字。
     personaExamples: path.join(dir, 'persona.examples.md'),
+    // 自动回流语料：从真实 QQ 对话里筛出来的成对样例，和手写语料分开放，互不覆盖。
+    personaExamplesAuto: path.join(dir, 'persona.examples.auto.md'),
+    // 原始成对流水（未筛选），只留最近若干条，用于排查「为什么这组没进语料」。
+    chatCorpusRaw: path.join(dir, 'chat-corpus.jsonl'),
     personaScenesDir: path.join(dir, 'persona.scenes'),
     personaScenes: {
       'qq-group': path.join(dir, 'persona.scenes', 'qq-group.md'),
@@ -225,6 +229,13 @@ export function readPersonaLayerText(kind = 'core', scene = '') {
   try { return file ? fs.readFileSync(file, 'utf8') : ''; } catch { return ''; }
 }
 
+/** 读当前角色的「自动回流语料」；文件不存在返回空串。 */
+export function readAutoExamplesText() {
+  const layers = activePersonaLayers();
+  if (!layers?.examplesAuto) return '';
+  try { return fs.readFileSync(layers.examplesAuto, 'utf8'); } catch { return ''; }
+}
+
 /** 当前角色的人格分层路径；没有角色系统时只返回核心（旧布局由调用方回退）。 */
 export function activePersonaLayers() {
   const cur = readCurrentCharacter();
@@ -236,6 +247,7 @@ export function activePersonaLayers() {
     daily: p.personaDaily,
     tone: p.personaTone,
     examples: p.personaExamples,
+    examplesAuto: p.personaExamplesAuto,
     scenesDir: p.personaScenesDir,
     scenes: p.personaScenes,
   };

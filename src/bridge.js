@@ -41,6 +41,7 @@ import { humanizeReplyText, looksLikeSilenceDecision } from './reply-cleanup.mjs
 import { prepareReply, capText, takeStickerTags, takeMarkdownImages, hasMarkdownImage, hasStickerTag } from './outbound-reply.mjs';
 import { writeJsonFileAtomic as writeJsonFileAtomicSync } from './atomic-write.mjs';
 import { createMemoryRecall } from './memory-recall.mjs';
+import { noteIncoming, recordReply } from './chat-corpus.js';
 import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
@@ -3119,7 +3120,9 @@ async function main(options = {}) {
       .map(publicSlangEntry);
   }
 
-  function withSlangContext(promptText) {
+  // 同一会话 10 分钟内不重复注入同一段近况：每条消息都带一遍太占上下文。
+  const learningInjectAt = new Map(); // key -> { text, at }
+  function withSlangContext(promptText, key = '') {
     const now = new Date();
     const timeLine = `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`;
     const parts = [timeLine];
@@ -3128,14 +3131,26 @@ async function main(options = {}) {
       if (block) parts.push(block);
     }
     // 情绪 / 口头禅：和桌宠、抖音读同一份状态，避免各平台语气前后矛盾。
+    // 用 compact 版：完整版会随每条消息进入会话历史，几十轮后变成大片重复噪音。
     try {
-      const persona = personaPromptBlock();
+      const persona = personaPromptBlock(Date.now(), { compact: true });
       if (persona) parts.push(persona);
     } catch { /* 状态坏了不影响聊天 */ }
     // 她自己看到的（贴吧/B站/抖音）与自动近况：只当背景，不主动汇报。
     try {
-      const learning = learningPromptBlock();
-      if (learning) parts.push(learning);
+      const learning = learningPromptBlock({ compact: true });
+      if (learning) {
+        const prev = key ? learningInjectAt.get(key) : null;
+        const nowMs = Date.now();
+        const repeated = prev && prev.text === learning && nowMs - prev.at < 10 * 60_000;
+        if (!repeated) {
+          if (key) {
+            if (learningInjectAt.size > 200) learningInjectAt.clear();
+            learningInjectAt.set(key, { text: learning, at: nowMs });
+          }
+          parts.push(learning);
+        }
+      }
     } catch { /* 学习状态坏了不影响聊天 */ }
     return parts.join('\n\n') + '\n\n' + promptText;
   }
@@ -9415,6 +9430,8 @@ async function main(options = {}) {
     }
     if (isGroup) recordFishWindow(key, '我', selfUserId, { isSelf: true });
     const parts = splitForQQ(safeMsg);
+    // 语料回流：把这一条和上一轮用户消息配成「他：… / 你：…」（筛选在 chat-corpus 里做）。
+    if (safeMsg) recordReply(key, safeMsg);
     lastSendFailed.delete(key);
     let partIndex = 0;
     for (const part of parts) {
@@ -9568,6 +9585,31 @@ async function main(options = {}) {
   // 按“有意的空格”拆分：真人不会主动用空格，因此 AI 回复里的空格视为分条信号。
   // 空格两侧只要有一侧是中文/中文标点，就按分条处理（包括中英文/数字之间的空格）。
   // 注意：该逻辑只用于一代 reserved 的自动转发文本；二代 reserved2 不走这里，二代必须显式用数组分条。
+  // 单字分条保护：空格分条本来是给「她想分两条说」用的，但弱模型会随手敲空格，
+  // 于是「牛逼 谁啊」变成两条、甚至把「牛逼」拆成「牛」「逼」——群里就是莫名其妙冒出一个单字。
+  // 这里把孤立的单个汉字并回相邻段；真正的单字反应（？ 草 6 行 嗯）放行。
+  const STANDALONE_REACTIONS = new Set(['？', '?', '！', '!', '…', '草', '6', '行', '嗯', '哦', '啊', '哈', '呵', '靠', '淦', '啧', '牛']);
+  function mergeShortFragments(groups) {
+    if (groups.length <= 1) return groups;
+    const lone = (g) => {
+      const chars = [...g];
+      return chars.length === 1 && /[\u4e00-\u9fa5]/.test(chars[0]) && !STANDALONE_REACTIONS.has(chars[0]);
+    };
+    const out = [];
+    for (const g of groups) {
+      if (lone(g) && out.length) {
+        out[out.length - 1] += g;
+        continue;
+      }
+      out.push(g);
+    }
+    if (out.length > 1 && lone(out[0])) {
+      out[1] = out[0] + out[1];
+      out.shift();
+    }
+    return out;
+  }
+
   function splitByCjkSpaces(src) {
     const tokens = String(src ?? '').split(/\s+/).map((t) => t.trim()).filter(Boolean);
     if (tokens.length <= 1) return tokens;
@@ -9585,7 +9627,7 @@ async function main(options = {}) {
       }
     }
     if (cur) groups.push(cur);
-    return groups;
+    return mergeShortFragments(groups);
   }
 
   // 新分句逻辑：分句权交给 AI。
@@ -9662,6 +9704,7 @@ async function main(options = {}) {
       if (prepared.text) cleaned.push(prepared.text);
       if (prepared.images.length) pendingImages.push(...prepared.images);
     }
+    if (cleaned.length) recordReply(key, cleaned.join(' '));
     for (let i = 0; i < cleaned.length; i++) {
       const msg = cleaned[i];
       const isLast = i === cleaned.length - 1;
@@ -10399,6 +10442,7 @@ async function main(options = {}) {
         throw err;
       }
       if (sent.length) recordSelfMemoryEvent(key, sent.join('\n'));
+      if (sent.length) recordReply(key, sent.join(' '));
       return sent;
     });
   }
@@ -13007,7 +13051,7 @@ async function main(options = {}) {
     const memeWikiBlock = memeWikiPromptBlock(promptText, { key });
     if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
     const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
-    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));
+    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText, key));
     const content = [{ type: 'text', text: turnText }, ...imageParts];
     // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
@@ -15696,6 +15740,14 @@ async function main(options = {}) {
     }
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // 语料回流：记下这一轮用户说的话，出站时和她的回复配对（src/chat-corpus.js）。
+    // 群聊只学「主人说的」或「直接对她说的」（@她 / 引用她 / 叫名字）；
+    // 群友闲聊也记（避免她回了 B 却错配上更早的 A），但标记为不学。
+    if (plainContent) {
+      noteIncoming(key, plainContent, {
+        eligible: kind === 'private' || isOwner || quoteTargetIsSelf || isDirectAddress(textContent, event, kind),
+      });
+    }
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
@@ -16215,7 +16267,7 @@ async function main(options = {}) {
     const memeWikiBlock = memeWikiPromptBlock(promptText, { key });
     if (memeWikiBlock) log(`梗百科命中：${memeWikiBlock.split('\n')[0].slice(0, 90)}`);
     const turnBlocks = [memeWikiBlock, seeMemeBlock].filter(Boolean).join('\n\n');
-    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText));
+    const turnText = withAlignmentContext(key, withSlangContext(turnBlocks ? `${turnBlocks}\n\n${promptText}` : promptText, key));
     const content = [{ type: 'text', text: turnText }, ...imageParts];
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
     const accepted = await api.sessions.prompt({

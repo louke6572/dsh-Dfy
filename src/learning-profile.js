@@ -48,6 +48,23 @@ function readJson(file, fallback = null) {
   }
 }
 
+/**
+ * 学习结果可能是模型原文（JSON / 代码块 / 截断片段），绝不能原样塞进提示词。
+ * 2026-11-13 实测：一次解析失败把 `{"profile":{"primary_interests":[...` 写进了
+ * persona.daily.auto.md，之后每轮都当【你最近的状态】注入，上下文里全是乱码。
+ * 这里统一过滤：去注释/代码块，认出 JSON 骨架就直接丢空。
+ */
+export function sanitizeLearningText(value, max = 600) {
+  let text = String(value ?? '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/```(?:json)?/gi, '')
+    .trim();
+  if (!text) return '';
+  if (/^[[{]/.test(text)) return '';
+  if (/"[A-Za-z_][A-Za-z0-9_]*"\s*:/.test(text) && /[{}[\]]/.test(text)) return '';
+  return text.slice(0, max);
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -77,8 +94,8 @@ export function readLearningProfile() {
     cursors: data.cursors && typeof data.cursors === 'object' ? data.cursors : {},
     experiences: Array.isArray(data.experiences) ? data.experiences.slice(-MAX_EXPERIENCES) : [],
     interests: Array.isArray(data.interests) ? data.interests.slice(0, 16) : [],
-    brief: String(data.brief ?? '').slice(0, 400),
-    persona: String(data.persona ?? '').slice(0, 600),
+    brief: sanitizeLearningText(data.brief, 400),
+    persona: sanitizeLearningText(data.persona, 600),
     stats: {
       runs: Number(data.stats?.runs) || 0,
       items: Number(data.stats?.items) || 0,
@@ -94,6 +111,8 @@ export function writeLearningProfile(next) {
     ...next,
     version: VERSION,
     updatedAt: Date.now(),
+    brief: sanitizeLearningText(next.brief ?? current.brief, 400),
+    persona: sanitizeLearningText(next.persona ?? current.persona, 600),
     experiences: (Array.isArray(next.experiences) ? next.experiences : current.experiences).slice(-MAX_EXPERIENCES),
   };
   writeJson(paths.profile, merged);
@@ -104,7 +123,7 @@ export function readAutoPersona() {
   try {
     const raw = fs.readFileSync(learningPaths().autoPersona, 'utf8');
     const lines = raw.split('\n').filter((line) => !line.startsWith('<!--'));
-    return lines.join('\n').trim();
+    return sanitizeLearningText(lines.join('\n'), 600);
   } catch {
     return '';
   }
@@ -112,7 +131,7 @@ export function readAutoPersona() {
 
 /** 覆盖自动人设层；旧内容先入历史（最多保留 30 条），失败不抛。 */
 export function writeAutoPersona(text, now = Date.now()) {
-  const body = String(text ?? '').trim().slice(0, 600);
+  const body = sanitizeLearningText(text, 600);
   if (!body) return false;
   const paths = learningPaths();
   try {
@@ -182,17 +201,34 @@ function chattyClauses(text, { clauses = 3, maxChars = 120 } = {}) {
   return picked.join('；');
 }
 
-/** 提示词块：她自己的见闻 + 自动近况。没学过东西时返回空串。 */
-export function learningPromptBlock() {
+/**
+ * 提示词块：她自己的见闻 + 自动近况。没学过东西时返回空串。
+ * compact=true 只输出最近一条 + 一句近况（QQ 每条消息都注入，完整版会累积成噪音）。
+ */
+export function learningPromptBlock({ compact = false } = {}) {
   const profile = readLearningProfile();
   const persona = readAutoPersona();
   if (!profile.experiences.length && !persona) return '';
+  if (compact) {
+    const bits = [];
+    const last = profile.experiences.slice(-1)[0];
+    if (last?.text) {
+      const label = PLATFORM_LABELS[last.platform] || last.platform;
+      const text = chattyClauses(sanitizeLearningText(last.text, 200), { clauses: 1, maxChars: 40 });
+      if (text) bits.push(`[${label}] ${text}`);
+    }
+    if (persona) {
+      const short = chattyClauses(persona, { clauses: 2, maxChars: 80 });
+      if (short) bits.push(short);
+    }
+    return bits.length ? `【近况（背景，不主动汇报）】${bits.join('；')}` : '';
+  }
   const lines = [];
   if (profile.experiences.length) {
     lines.push('【你最近自己刷到的（你自己的私下生活，不是主人说的）】');
     for (const item of profile.experiences.slice(-3)) {
       const label = PLATFORM_LABELS[item.platform] || item.platform;
-      const text = chattyClauses(item.text, { clauses: 1, maxChars: 60 });
+      const text = chattyClauses(sanitizeLearningText(item.text, 200), { clauses: 1, maxChars: 60 });
       if (text) lines.push(`- [${label}] ${text}`);
     }
     lines.push('- 这些只是背景，别主动汇报「我今天看了…」，也别每条都提，被问起或聊到才说');

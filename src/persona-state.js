@@ -153,9 +153,16 @@ export function personaSnapshot(now = Date.now()) {
   };
 }
 
-/** 提示词块：语气约束 + 心情 + 口头禅。没内容时返回空串（调用方直接跳过）。 */
-export function personaPromptBlock(now = Date.now()) {
+/**
+ * 提示词块：语气约束 + 心情 + 口头禅。没内容时返回空串（调用方直接跳过）。
+ * compact=true 只输出一行（QQ 每条消息都会注入，完整版会在历史里累积成噪音）。
+ */
+export function personaPromptBlock(now = Date.now(), { compact = false } = {}) {
   const snap = personaSnapshot(now);
+  if (compact) {
+    const quirk = snap.quirks.length ? ` · 口头禅偶尔用：${snap.quirks.join('、')}` : '';
+    return `【此刻心情】${snap.moodLabel}（${snap.moodNote}）· 只影响语气和长短，别自我播报${quirk}`;
+  }
   const lines = [];
   // 用第二人称写，避免模型把「她」当旁白对象来描述；块内一律不用句号。
   lines.push(`【你现在的心情】${snap.moodLabel}（${snap.moodNote}）`);

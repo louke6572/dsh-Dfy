@@ -107,7 +107,10 @@ export function createHumanizeGate({ tokenUsageFile = null, scope = 'qq', log = 
     if (addressed) add(5, addressedReason);
     if (quoteTargetIsSelf) add(5, '引用她');
     const towardMe = /[你妳](们)?/.test(body);
-    const asking = /[？?]|吗|呢|怎么|为什么|是不是|能不能/.test(body);
+    // 问句识别要覆盖「什么 / 啥 / 哪 / 多少 / 谁 / 几点 / 咋」……
+    // 以前只认 `？? 吗 呢 怎么 为什么 是不是 能不能`，
+    // 「今天刷了什么」这种明确提问只拿到「短句+0.5」，直接被判不接。
+    const asking = /[？?]|吗|呢|什么|啥|哪|多少|多久|几点|谁|怎么|如何|咋|为什么|是不是|能不能|有没有|要不要|行不行|好不好/.test(body);
     if (towardMe) add(1.5, '对你说');
     if (asking) add(1.5, '在问');
     // 「你在吗 / 你觉得呢」这种明确在问她的句子不再靠中间概率掷骰子：
@@ -120,7 +123,10 @@ export function createHumanizeGate({ tokenUsageFile = null, scope = 'qq', log = 
     if (isOwner) add(0.5, '主人');
 
     let reply;
-    if (score >= p.yesScore) reply = true;
+    // 群里的提问（40 字以内、群还没刷屏）直接回：
+    // 用户反馈「有人提问也不回」—— 提问被概率吞掉最不像活人。
+    if (asking && body.length <= 40 && recentCount < 8) reply = true;
+    else if (score >= p.yesScore) reply = true;
     else if (score <= p.noScore) reply = false;
     else reply = Math.random() < p.replyProb * willingness(cfg);
     return { score: Math.round(score * 10) / 10, reasons, reply };

@@ -1424,7 +1424,9 @@ async function flushBatch({ conversation, batch }) {
       platform: 'douyin',
       group: conversation.isGroup,
       cleanClutter: qqHumanizeConfig().cleanReply !== false,
-      maxChars: conversation.isGroup ? 80 : 200,
+      // 群聊 120 字（约两条短句）：以前 80 字经常在句子中间被切掉，
+      // 用户看到的就是「发到一半直接截断」。私聊 200。
+      maxChars: conversation.isGroup ? 120 : 200,
       stripPaths: true,
       allowSilence: true,
     });
@@ -1513,7 +1515,7 @@ function splitBubbles(text, { group = false } = {}) {
     .map((part) => part.trim())
     .filter(Boolean);
   const maxCount = group ? 1 : 2;
-  const maxLen = group ? 80 : 100;
+  const maxLen = group ? 120 : 100;
   const bubbles = [];
   for (const part of parts) {
     if (bubbles.length >= maxCount) break;

@@ -306,12 +306,12 @@ ok(`路径脱敏行为用例 ${REDACT_CASES.length} 条`);
 
   // 抖音群聊：要有和 QQ 同源的接话意愿/攒一攒，以及群聊短回复。
   if (!/createHumanizeGate/.test(douyinSrc)) {
-    fail('[抖音群聊] 没有接入 humanize 接话意愿（关掉「只被叫才回」后会每条都回）');
+    fail('[抖音群聊] 没有接入 humanize 接话打分（关掉「只被叫才回」后会按打分决定）');
   } else if (!/groupMentionOnly === false/.test(douyinSrc) || !/gatherDelayMs\(/.test(douyinSrc)) {
-    fail('[抖音群聊] 缺少群聊接话意愿或攒一攒');
-  } else if (!/maxChars: conversation\.isGroup \? 80/.test(douyinSrc)) {
-    fail('[抖音群聊] 群聊回复没有单独限长');
-  } else ok('抖音群聊有接话意愿/攒一攒，群聊回复更短');
+    fail('[抖音群聊] 缺少群聊接话打分或攒一攒');
+  } else if (!/maxChars: conversation\.isGroup \? 120/.test(douyinSrc)) {
+    fail('[抖音群聊] 群聊回复没有单独限长（应为 120 字）');
+  } else ok('抖音群聊有接话打分/攒一攒，群聊回复有独立限长');
 
   // 设置页必须能关掉温柔模式（否则用户只能在 config.json 里改）。
   const qqPage = read(path.join(ROOT, 'lib', 'ui', 'pages', '90-qq.js'));

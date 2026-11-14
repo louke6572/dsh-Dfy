@@ -76,6 +76,15 @@ function truthy(value, label) {
   eq(humanizeReplyText('球我接住了'), '球我接住了', 'A5 真实语义的「接住」不被误伤');
 }
 
+// A5b. 自我旁白：把自己的动作/收尾当话发出来
+{
+  eq(humanizeReplyText('她发表情，我回了张吃饱了的鲸鱼娘，正好接投喂话题，收尾'), '', 'A5b 旁白整行被清掉');
+  eq(humanizeReplyText('她回个「哈哈」，夜宵梗聊到自然收尾了'), '', 'A5b 「…聊到自然收尾了」被清掉');
+  eq(humanizeReplyText('收尾了'), '', 'A5b 单说「收尾了」被清掉');
+  eq(humanizeReplyText('来了来了，还是你上道'), '来了来了，还是你上道', 'A5b 正常回复不被误伤');
+  eq(humanizeReplyText('我回了趟老家，你呢'), '我回了趟老家，你呢', 'A5b 真实语义的「我回了」不被误伤');
+}
+
 // A6. 固定附和开场：「确实 / 就是 / 对 / 嗯」开头
 {
   eq(humanizeReplyText('确实，现在年轻人干不下来那个的太多了'), '现在年轻人干不下来那个的太多了', 'A6 「确实，」开场被去掉');

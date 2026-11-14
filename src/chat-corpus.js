@@ -32,6 +32,14 @@ const lastIncoming = new Map(); // key -> { text, at }
 const FILLER_ONLY = /^[嗯恩哦噢对对啊是是的行好可以可可草6牛哦额啊这那没看了哈嘿呀呢吧嘛]{1,6}$/;
 /** 客服腔 / 自曝 AI：这些句子学进去只会把 AI 味带回来。 */
 const AI_SMELL = /(作为(一个)?(AI|人工智能|助手)|希望(对你|能帮)|有什么可以帮|我理解你的(感受|心情)|抱歉|无法(提供|帮助)|我是(一个)?AI|有什么其他)/;
+/** 只有占位符的入站（对方发表情/图片）：没有语义上下文，配出来的对句学不了。 */
+const PLACEHOLDER_ONLY = /^\[(?:表情|表情包|动画表情|商城表情|图片|语音|视频|文件|转发|链接)[^\]]{0,10}\]$/;
+/**
+ * 自我旁白：她把自己的动作/收尾当话写出来（「她发表情，我回了张…，收尾」）。
+ * 这类句子一旦进了语料，模型会照着念，形成「旁白 → 学 → 再念」的回音室
+ * （2026-11-14 实测：两句旁白回流进人格后，她开始照着原句说）。
+ */
+const NARRATION = /(?:^|[，。；、\s])(?:我|她|他)(?:就|又|也)?(?:回|发)(?:了|个|张|一句)|(?:正好|刚好)接(?:上|着)?[^，。]{0,8}话题|(?:话题|梗|聊天|对话)[^，。]{0,10}(?:收尾|结束)|^收尾了?$/;
 
 function clean(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -64,6 +72,9 @@ function acceptPair(userText, replyText) {
   if (u.length < 2 || u.length > 120) return false; // 太短没有上下文，太长是粘贴的报错/长文
   if (r.length < 2 || r.length > 100) return false; // 短到无信息 / 长到像小作文
   if (u.startsWith('/')) return false; // 管理命令
+  if (PLACEHOLDER_ONLY.test(u)) return false; // 对方只发了个 [表情28]，没有可配对的内容
+  if (/^(?:他|她|我)[：:]/.test(r)) return false; // 把对话标签「他：…」当回复
+  if (NARRATION.test(r)) return false; // 自我旁白，不是在对人说话
   if (/^(⚠️|⏺|〔|\[)/.test(r)) return false; // 系统通知 / 标记
   if (AI_SMELL.test(r)) return false;
   if (FILLER_ONLY.test(r)) return false;

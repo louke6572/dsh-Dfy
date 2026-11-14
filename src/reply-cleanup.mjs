@@ -19,6 +19,15 @@ export function normalizeFullWidthMarkdown(input) {
   );
 }
 
+/**
+ * 自我旁白：模型把自己的动作/收尾决定当成一句话发出来，例如
+ *   「她发表情，我回了张吃饱了的鲸鱼娘，正好接投喂话题，收尾」
+ *   「她回个「哈哈」，夜宵梗聊到自然收尾了」
+ * 这不是在对人说话，发到聊天里就是凭空冒出一段第三人称旁白。
+ * 只按**整行**判定，句子里顺带提到不算。
+ */
+const NARRATION_LINE = /(?:^|[，。；])\s*(?:她|他|对方)(?:就|又|也)?(?:发|回)(?:了|个|张)?(?:表情|图片|照片|表情包)|(?:正好|刚好)接(?:上|着)?[^，。]{0,8}话题|(?:话题|梗|聊天|对话)[^，。]{0,10}(?:收尾|结束)|^收尾了?$/;
+
 export function humanizeReplyText(input, { cleanClutter = true } = {}) {
   let text = String(input ?? '');
   // 模型英文草稿：Question: ... / Answer: ... —— 保留 Answer 之后，丢掉草稿
@@ -81,6 +90,14 @@ export function humanizeReplyText(input, { cleanClutter = true } = {}) {
       return cut.length >= 4 ? cut : line;
     }).join(lf);
   }
+  // 自我旁白整行丢掉：她把自己的动作/收尾写成旁白时，删行而不是留在气泡里。
+  // 放在 cleanClutter 之外——关掉「活人感」也不该把旁白发给对方。
+  text = text
+    .split(lf)
+    .map((line) => (NARRATION_LINE.test(line.trim()) ? '' : line))
+    .filter((line) => line.trim())
+    .join(lf)
+    .trim();
   // 「禁止夹带句号」：人格卡（行为规则层）明确要求不用「。」，但模型很爱用，
   // 且注入的近况/见闻本身带句号，模型会照抄。这里做确定性兜底：
   // 句末/换行前的句号直接去掉，句中句号换成逗号（保留断句）。

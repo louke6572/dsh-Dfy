@@ -502,6 +502,9 @@ export function startScheduler(ctx, opts) {
     log = () => {},
   } = opts
 
+  // 调度循环外层兜底：以前 .catch(() => {}) 完全吞错——内部 try 之外的代码（如
+  // writeState）抛错时该轮无声消失、日志零新增（2026-11-14 体检）。至少留个痕。
+  const tickError = (what) => (error) => log(`[bili-whale] ${what} 循环异常：${String(error?.message ?? error).slice(0, 160)}`)
   const ACCOUNT_DIR = path.join(dshHome, 'surfcore', 'bili')
   const PLATFORM_DIR = activePlatformStateDir(ACCOUNT_DIR)
   const STATE = path.join(PLATFORM_DIR, 'whale-night.json')
@@ -1130,21 +1133,21 @@ export function startScheduler(ctx, opts) {
     }
   }
 
-  const timer = setInterval(() => { tick().catch(() => {}) }, TICK_MS)
+  const timer = setInterval(() => { tick().catch(tickError('叫醒')) }, TICK_MS)
   // 一次性启动定时器单独收好：stop() 必须把它们也清掉，否则测试/卸载后进程
   // 仍被 8~25 秒后的回调吊着（Node 24 下强制 exit 还会撞 libuv 断言）。
   const startupTimers = [
-    setTimeout(() => { tick().catch(() => {}) }, 8000),          // 启动 8 秒后先跑一次
-    setTimeout(() => { dynTick().catch(() => {}) }, 12_000),
-    setTimeout(() => { listenTick().catch(() => {}) }, 15_000),
-    setTimeout(() => { dmTick().catch(() => {}) }, 25_000),
+    setTimeout(() => { tick().catch(tickError('叫醒')) }, 8000),          // 启动 8 秒后先跑一次
+    setTimeout(() => { dynTick().catch(tickError('动态')) }, 12_000),
+    setTimeout(() => { listenTick().catch(tickError('监听')) }, 15_000),
+    setTimeout(() => { dmTick().catch(tickError('私信')) }, 25_000),
   ]
   // 2026-10-21（用户定）：四类动态各有固定发布点 —— 到点叫她一次（08/12/16/20）
-  const timerDyn = setInterval(() => { dynTick().catch(() => {}) }, 60_000)
+  const timerDyn = setInterval(() => { dynTick().catch(tickError('动态')) }, 60_000)
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
-  const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)
-  const timerDm = setInterval(() => { dmTick().catch(() => {}) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
-  const timerTieba = setInterval(() => { tiebaFallbackTick().catch(() => {}) }, 10 * 60_000)  // 贴吧兜底叫醒（见上）
+  const timer2 = setInterval(() => { listenTick().catch(tickError('监听')) }, 30_000)
+  const timerDm = setInterval(() => { dmTick().catch(tickError('私信')) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
+  const timerTieba = setInterval(() => { tiebaFallbackTick().catch(tickError('贴吧兜底')) }, 10 * 60_000)  // 贴吧兜底叫醒（见上）
   log(`[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）；监听已挂上 ✓`)
 
   return {
@@ -1166,9 +1169,9 @@ export function startScheduler(ctx, opts) {
         const keepSeen = Number(oldL.lastSeen ?? 0)
         writeL(keepSeen > 0 ? { lastSeen: keepSeen } : {})
       } catch {}
-      tick().catch(() => {})
-      listenTick().catch(() => {})
-      dmTick().catch(() => {})
+      tick().catch(tickError('叫醒'))
+      listenTick().catch(tickError('监听'))
+      dmTick().catch(tickError('私信'))
     },
     stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timerDyn); clearInterval(timerDm); clearInterval(timerTieba); for (const t of startupTimers) clearTimeout(t); try { permissionListenerOff?.() } catch {} },
     /** 切角色时用：停定时器 + 取消当前 DSH 会话的在途回合，避免旧人格继续跑。 */

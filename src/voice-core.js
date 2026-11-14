@@ -470,3 +470,71 @@ export function cleanupTemp(file, isTemp) {
   if (!isTemp) return;
   try { fs.unlinkSync(file); } catch {}
 }
+
+/**
+ * 音频缓存目录按水位清理：TTL → 数量 → 字节，超了就从旧到新删。
+ *
+ * 为什么共享：每句新话都多一个按内容寻址的缓存文件，长期跑会长到几万个（edge 当年
+ * 涨到几百 MB 的教训）；此前 prune 只在 voice-tts.js / voice-edge-tts.js 各有一份，
+ * doubao/qwen/online/deepseek 四个实现都没有——2026-11-14 体检后收敛到这里，谁新接
+ * 音源谁就调这一个，不再各抄一份。
+ *
+ * 残留的 `*.tmp`（写入中断的半截文件）单独按更短的 TTL 扫掉。
+ * 失败一律吞掉——缓存清理绝不能影响"这条语音能不能发出去"。
+ */
+export function pruneAudioCache(dir, {
+  exts = ['.wav', '.mp3'],
+  maxAgeMs = 14 * 86400 * 1000,
+  tmpMaxAgeMs = 24 * 3600 * 1000,
+  maxFiles = 400,
+  maxBytes = 150 * 1024 * 1024,
+} = {}) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+      // `.tmp` 半截文件始终纳入扫描（写入中断的残留），不受 exts 限制
+      .filter((e) => e.isFile() && (exts.some((ext) => e.name.endsWith(ext)) || e.name.endsWith('.tmp')))
+      .map((e) => {
+        const f = path.join(dir, e.name);
+        try { const st = fs.statSync(f); return { f, size: st.size, at: st.mtimeMs, tmp: e.name.endsWith('.tmp') }; } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch { return { removed: 0 }; }
+  const now = Date.now();
+  let removed = 0;
+  // ① 超龄直接淘汰（tmp 半截文件的 TTL 单独算短些）
+  const alive = [];
+  for (const entry of entries) {
+    const ageLimit = entry.tmp ? tmpMaxAgeMs : maxAgeMs;
+    if (now - entry.at > ageLimit) {
+      try { fs.unlinkSync(entry.f); removed += 1; } catch { alive.push(entry); }
+    } else {
+      alive.push(entry);
+    }
+  }
+  // ② 仍超数量/体积水位 → 按 mtime 从旧到新淘汰
+  let total = alive.reduce((n, e) => n + e.size, 0);
+  if (alive.length > maxFiles || total > maxBytes) {
+    alive.sort((a, b) => a.at - b.at);
+    for (const entry of alive) {
+      if (alive.length - removed <= maxFiles && total <= maxBytes) break;
+      try { fs.unlinkSync(entry.f); removed += 1; total -= entry.size; } catch { /* 下轮再试 */ }
+    }
+  }
+  return { removed };
+}
+
+/**
+ * 音频文件原子落盘：唯一临时名（并发同句合成时固定 `${pid}.tmp` 会互相覆盖 /
+ * 先 rename 的把后 rename 的挤成 ENOENT，2026-11-14 体检），失败清理半截文件再抛。
+ */
+export function writeAudioAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2, 10)}.tmp`;
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw new Error(`写入语音缓存失败：${error?.message ?? error}`);
+  }
+}

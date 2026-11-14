@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeAudioAtomic } from './voice-core.js';
 
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
@@ -100,9 +101,7 @@ export async function synthesizeToFile({
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length <= 44) throw new Error('TTS 返回了空音频');
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, file);
+  writeAudioAtomic(file, buf);
   pruneCache(outDir);
 
   const dur = Number(res.headers.get('x-duration-ms')) || 0;

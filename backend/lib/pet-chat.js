@@ -32,10 +32,13 @@ import { adminFromSources } from '../../src/admin-identity.js';
 import { PET_DATA_DIR } from './paths.js';
 import { appendMemoryInboxEvent } from '../../src/memory-card.js?rev=20261025-pet-memory2';
 import { wavDurationMs } from '../../src/voice-tts.js';
-import { synthesizeToFileByRoute } from '../../src/voice-routes.mjs';
+import { synthesizeToFileByRoute, VOICE_ROUTES } from '../../src/voice-routes.mjs';
+import { pruneAudioCache } from '../../src/voice-core.js';
 import { DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from '../../src/voice-online-tts.js';
 import { DOUBAO_DEFAULT_VOICE } from '../../src/voice-doubao-tts.js';
 import { QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from '../../src/voice-qwen-tts.js';
+import { DEEPSEEK_DEFAULT_VOICE } from '../../src/voice-deepseek-tts.js';
+import { resolveSearchApiKey } from '../../src/web-search.js';
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFile = promisify(_execFile);
@@ -253,7 +256,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     // 朗读（消息卡片、气泡）也必须跟随同一个音源，否则换了引擎朗读还是旧声音。
     // speakVoice / speakRate 只影响「朗读」，没配就跟随语音条音色。
     const edgeVoice = String(t.edgeVoice || 'zh-CN-XiaoxiaoNeural');
-    const route = ['edge', 'local', 'cloud', 'online', 'doubao', 'qwen'].includes(String(t.route)) ? String(t.route) : 'edge';
+    // 白名单 import 同一份 VOICE_ROUTES（这里曾是手抄数组，加音源时两边漂移过）
+    const route = VOICE_ROUTES.includes(String(t.route)) ? String(t.route) : 'edge';
     return {
       enabled: t.enabled === true,
       maxChars: clampInt(t.maxChars, 120, 20, 300),
@@ -274,6 +278,9 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       qwenVoice: String(t.qwenVoice || QWEN_DEFAULT_VOICE),
       qwenModel: String(t.qwenModel || QWEN_DEFAULT_MODEL),
       qwenLanguage: String(t.qwenLanguage || 'Auto'),
+      // deepseek = DeepSeek 官方语音。key 允许留空，由 withDeepseekVoiceKey 兜底。
+      deepseekApiKey: String(t.deepseekApiKey || '').trim(),
+      deepseekVoice: String(t.deepseekVoice || DEEPSEEK_DEFAULT_VOICE),
       edgeVoice,
       speakVoice: String(t.speakVoice || edgeVoice),
       speakRate: normalizeEdgeRate(t.speakRate),
@@ -374,14 +381,31 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
 
   // ── 记忆卡：把对话写进和 QQ / B站 同一张卡 ─────────────────────────────
   // 只追加 inbox（轻量、原子），真正的评分/脱敏/衰减由插件的记忆卡维护器做。
+  // facts 模式的「值得记」判定与 QQ 侧 memoryWorthRecording（bridge.js）同口径：
+  // 以前桌宠每轮一问一答全量进卡，寒暄把真正的事实挤到遗忘曲线边缘（2026-11-14 体检）。
+  const MEMORY_EXPLICIT = /(记住|记一下|记着|别忘了|写进记忆|保存到记忆|你记得|帮我记)/;
+  const MEMORY_FACT = /(喜欢|讨厌|不喜欢|打算|计划|约定|答应|以后|生日|纪念日|名字|叫我|工作|上班|学校|考试|考研|搬家|养了|生病|吃药|结婚|分手|在一起|习惯|忌口|过敏|梦想|害怕)/;
+  function petMemoryWorthRecording(text) {
+    const body = String(text ?? '').trim();
+    if (MEMORY_EXPLICIT.test(body)) return true;
+    // 桌宠会话的发送者恒为主人（isOwner），不必像 QQ 群聊那样再判 direct
+    if (MEMORY_FACT.test(body) && body.length >= 6) return true;
+    return false;
+  }
   function rememberEvents(events) {
     if (!Array.isArray(events) || !events.length) return 0;
     if (!settings().chat.remember) return 0;
     if (unifiedConfig()?.memoryCard?.enabled === false) return 0;
+    let list = events;
+    if (String(qqConfig()?.memory?.recordMode ?? 'facts') !== 'chatlog') {
+      // 主人这条不值得记 → 整对一起丢（摄取逻辑把回复并进最近一条主人记录，孤儿回复会挂错对）
+      const worth = events.some((event) => event && event.isSelf !== true && petMemoryWorthRecording(event.text));
+      if (!worth) return 0;
+    }
     let written = 0;
     try {
       const paths = activeMemoryPaths();
-      for (const event of events) {
+      for (const event of list) {
         if (appendMemoryInboxEvent(paths, event)) written += 1;
       }
     } catch (error) {
@@ -641,6 +665,17 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   }
 
   // ── 语音 ────────────────────────────────────────────────────────────────
+  // DeepSeek 语音 key 兜底（与 bridge.js 同一套规则）：没单独填 key 就复用联网搜索那把
+  // DeepSeek key。只在传给合成器的副本上补，不回填 voiceSettings()——后者会被
+  // settings() 序列化给前端，回填会把凭据泄进响应。
+  function withDeepseekVoiceKey(tts) {
+    if (tts?.route === 'deepseek' && !tts.deepseekApiKey) {
+      const cfg = qqConfig();
+      return { ...tts, deepseekApiKey: resolveSearchApiKey(cfg?.webSearch).key };
+    }
+    return tts;
+  }
+
   async function synthesize(text, { mode = 'voice', voice = '', rate = '', pitch = '' } = {}) {
     const v = voiceSettings();
     if (!v.enabled) return { ok: false, error: '语音合成未开启（设置 → 语音设置 → 打开总开关）' };
@@ -654,7 +689,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     try {
       let resultPath, durationMs, ext, realKey;
 
-      // 六音源统一走 src/voice-routes.mjs（与 QQ 语音条同一个实现，避免两份 if-else 漂移）。
+      // 七音源统一走 src/voice-routes.mjs（与 QQ 语音条同一个实现，避免两份 if-else 漂移）。
       // edge 的音色/语速只对朗读有意义，其它音源用各自配置里的音色，所以这里只有 edge 传 voice。
       const r = await synthesizeToFileByRoute({
         text: spoken,
@@ -662,7 +697,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         rate: talkRate,
         pitch: talkPitch,
         route: v.route,
-        tts: v,
+        tts: withDeepseekVoiceKey(v),
         timeoutMs: v.timeoutMs,
         outDir: voiceDir,
       });
@@ -694,6 +729,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
 
       realKey = path.basename(resultPath, ext);
       audioFiles.set(realKey, resultPath);
+      // 语音目录水位清理：每条语音回复/主动搭话落一个文件，以前只增不减（2026-11-14 体检）
+      try { pruneAudioCache(voiceDir, { exts: ['.wav', '.mp3'], maxFiles: 200, maxBytes: 100 * 1024 * 1024 }); } catch {}
       return { ok: true, key: realKey, durationMs, text: spoken };
     } catch (error) {
       const message = String(error?.message ?? error).slice(0, 200);

@@ -20,6 +20,13 @@ import { redactLocalPaths } from './redact-paths.mjs';
 const STICKER_TAG_RE = /\[(?:sticker|表情)[:：]\s*([^\]\n]{1,40})\]/gi;
 /** Markdown 图片行：允许 ] 和 ( 之间有空格（GLM 等模型常这么写）。 */
 const MD_IMAGE_RE = /!\[[^\]]*\]\s*\(([^)]+)\)/g;
+/**
+ * 行内思考标签兜底：现在 DSH 的思考是独立 block，collector 不会收到；
+ * 但换到会在 text 里内联 <think>…</think> 的 provider 时，全管道没有第二道防线
+ * （2026-11-14 体检）。整块剥掉，未配对的孤立标签也剥。
+ */
+const THINK_TAG_RE = /<think(?:ing)?\s*>[\s\S]*?<\/think(?:ing)?\s*>/gi;
+const THINK_TAG_UNPAIRED_RE = /<\/?(?:think|thinking)\s*>/gi;
 
 export function takeStickerTags(input) {
   const refs = [];
@@ -109,7 +116,9 @@ export function prepareReply(input, {
 } = {}) {
   // 1) 假表情标记必须先抽走，humanize 会把它们删掉，删掉就拿不到名字补真图了。
   const sticker = takeStickerTags(input);
-  let text = sticker.text;
+  let text = sticker.text
+    .replace(THINK_TAG_RE, ' ')
+    .replace(THINK_TAG_UNPAIRED_RE, ' ');
   // 2) 平台自己的预处理（桥接的 token 脱敏要在 humanize 前做）。
   if (typeof transform === 'function') text = transform(text);
   // 3) 通用清洗：全角 Markdown 归一、客服腔、句号、空行、AI 味、附和开场。

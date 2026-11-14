@@ -16,6 +16,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pruneAudioCache, writeAudioAtomic } from './voice-core.js';
 
 const V1_ENDPOINT = 'https://openspeech.bytedance.com/api/v1/tts';
 const V3_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
@@ -175,8 +176,8 @@ export async function synthesizeDoubaoToFile({
     ? await synthesizeV3({ say, apiKey: key, resourceId, voice: voiceType, encoding: format, sampleRate, speedRatio, timeoutMs, fetchImpl })
     : await synthesizeV1({ say, appId, accessToken, voice: voiceType, encoding: format, speedRatio, timeoutMs, fetchImpl });
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, result.buf);
-  fs.renameSync(tmp, file);
+  writeAudioAtomic(file, result.buf);
+  // doubao 缓存混着 mp3/wav/ogg 三种扩展名，全列进水位清理
+  pruneAudioCache(outDir, { exts: ['.mp3', '.wav', '.ogg', '.opus'] });
   return { path: file, durationMs: result.durationMs || 0, cached: false, format: result.format || format };
 }

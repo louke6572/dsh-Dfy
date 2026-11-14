@@ -1263,6 +1263,26 @@ function senderNameOf(event) {
   return String(event?.stranger?.nickname || '陌生人');
 }
 
+// 群聊近期消息时间戳（接话打分 recentCount 的数据源）：conversationKey -> number[]
+const recentChatter = new Map();
+
+/** 记一条群消息到达时间；要在所有 early-return 之前调，否则热闘度会被低估。 */
+function noteRecentChatter(key) {
+  const arr = recentChatter.get(String(key)) ?? [];
+  arr.push(Date.now());
+  while (arr.length > 200) arr.shift();
+  recentChatter.set(String(key), arr);
+}
+
+/** 最近 10 分钟的群消息条数（接话打分的 recentCount）。 */
+function recentChatterCount(key, { windowMs = 10 * 60_000 } = {}) {
+  const arr = recentChatter.get(String(key));
+  if (!Array.isArray(arr)) return 0;
+  const since = Date.now() - windowMs;
+  while (arr.length && arr[0] < since) arr.shift();
+  return arr.length;
+}
+
 async function handleMessage(event) {
   try {
     if (disposed) return;
@@ -1282,6 +1302,8 @@ async function handleMessage(event) {
     const humanizeCfg = douyinHumanizeConfig();
     const text = textOf(event);
     if (!text) return;
+    // 记下群聊近期消息（接话打分的 recentCount 数据源），要在任何 early-return 之前记
+    if (conversation.isGroup) noteRecentChatter(conversation.key);
     if (conversation.isGroup && config.groupMentionOnly !== false && !addressed) {
       log(`群消息未点名，忽略 ${conversation.key}`);
       return;
@@ -1290,7 +1312,8 @@ async function handleMessage(event) {
     // 以前这里直接用 `replyProb × 意愿` 的扁平概率：正常问一句也只有 30%（花费高时 3%）
     // 的概率回，看起来就像「群聊回复被锁了」。
     if (conversation.isGroup && config.groupMentionOnly === false && humanizeCfg.groupGate !== false && !addressed) {
-      const verdict = humanizeOf().scoreGroup({ text, addressed: false, cfg: humanizeCfg });
+      // recentCount：群聊近期消息条数。以前没传，「群里正热不接」和「提问直回」两条规则从未生效（2026-11-14 体检）。
+      const verdict = humanizeOf().scoreGroup({ text, addressed: false, cfg: humanizeCfg, recentCount: recentChatterCount(conversation.key) });
       if (!verdict.reply) {
         log(`群消息没点名，接话打分 ${verdict.score}（${verdict.reasons.join('、')}）不接 ${conversation.key}`);
         return;

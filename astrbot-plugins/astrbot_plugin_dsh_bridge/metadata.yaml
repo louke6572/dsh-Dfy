@@ -6,7 +6,7 @@ desc: >-
   和「OpenAI 兼容 provider」不同，这里能带上 QQ 会话标识（unified_msg_origin），
   所以 DSH 里每段 QQ 对话都有自己的会话窗口：侧栏可见、可切模型、能看思考和上下文。
   AstrBot 的插件链（表情包、延时、收尾等结果类插件）照常生效。
-version: 1.0.0
+version: 1.1.0
 author: dsh-Dfy
 repo: https://github.com/louke6572/dsh-Dfy
 astrbot_version: ">=4.11.0"

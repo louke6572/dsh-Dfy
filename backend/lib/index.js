@@ -50,7 +50,9 @@ import { createAstrbotSupervisor, unsafeDirReason } from './astrbot-supervisor.j
 import { createAstrbotApi } from './astrbot-api.js';
 import { sendQqPrivate } from './qq-direct.js';
 import { createRawChat, openAiCompletion, openAiStreamChunks } from './dfy-raw-chat.js';
-import { createQqBridgeChat } from './qq-bridge-chat.js';
+import { checkBridgeAccess, createQqBridgeChat } from './qq-bridge-chat.js';
+import { readAsrSettings, transcribeQqVoice } from './qq-voice-asr.js';
+import { notifyOwner } from './owner-alert.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -499,6 +501,9 @@ export function apply(ctx) {
         baseUrl: String(currentDshUrl() || '').replace(/\/+$/, ''),
         token: ensureBridgeToken(),
         path: '/dsh-surfcore/v1/qq-bridge/ask',
+        // 插件据此决定语音条要不要转文字（socialV2.voice.asr.enabled 的镜像，
+        // 插件自己不存配置，发现文件是它唯一的配置通道）
+        voiceAsrEnabled: readQqConfig().config?.socialV2?.voice?.asr?.enabled === true,
         updatedAt: new Date().toISOString(),
       });
       return true;
@@ -3194,6 +3199,59 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  // DeepSeek key 状态体检：语音（TTS/ASR）和联网搜索共用这把 key，失效时全部静默
+  // 降级（搜索回 Bing、语音回占位文案），以前没有任何页面能看到（2026-11-14 体检）。
+  // 用官方余额接口验证（免费、顺带拿余额），结果缓存 10 分钟。
+  let deepseekStatusCache = null; // { at, payload }
+  async function handleDeepseekStatus(req, res) {
+    if (String(req.method || 'GET').toUpperCase() !== 'GET') {
+      json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 GET' });
+      return;
+    }
+    if (deepseekStatusCache && Date.now() - deepseekStatusCache.at < 10 * 60_000) {
+      json(res, 200, { ok: true, cached: true, ...deepseekStatusCache.payload });
+      return;
+    }
+    const cfg = readQqConfig().config ?? {};
+    const settings = readAsrSettings(cfg);
+    const tail = String(settings.apiKey ?? '').slice(-4);
+    const payload = {
+      keySource: settings.keySource,
+      hasKey: Boolean(settings.apiKey),
+      keyTail: tail,
+      asrEnabled: settings.enabled === true,
+      balance: null,
+      ok: false,
+      hint: '',
+      checkedAt: new Date().toISOString(),
+    };
+    if (!settings.apiKey) {
+      payload.hint = '读不到 DeepSeek key：检查联网搜索的 Key 配置（webSearch.apiKey / DEEPSEEK_API_KEY / DSH 凭据）';
+    } else {
+      try {
+        const r = await fetch('https://api.deepseek.com/user/balance', {
+          headers: { authorization: `Bearer ${settings.apiKey}` },
+          signal: AbortSignal.timeout(15_000),
+        });
+        const data = await r.json().catch(() => null);
+        if (r.status === 401) {
+          payload.hint = 'key 已失效（DeepSeek 返回 401）：去 platform.deepseek.com/api_keys 重新生成，并更新到 DSH 凭据';
+        } else if (r.ok && data?.is_available !== undefined) {
+          const info = Array.isArray(data.balance_infos) ? data.balance_infos[0] : null;
+          payload.balance = info ? { currency: info.currency, total: info.total_balance } : null;
+          payload.ok = data.is_available === true;
+          payload.hint = payload.ok ? '' : '账号当前不可用（可能余额为负被暂停）：去开放平台确认';
+        } else {
+          payload.hint = `余额接口返回 HTTP ${r.status}，稍后再试`;
+        }
+      } catch (error) {
+        payload.hint = `连不上 DeepSeek：${String(error?.message ?? error).slice(0, 120)}`;
+      }
+    }
+    deepseekStatusCache = { at: Date.now(), payload };
+    json(res, 200, { ok: true, cached: false, ...payload });
+  }
+
   // ── 能力槽接口（设置 → 模块中心）────────────────────────────────────────
   // GET  = 当前能力清单 / 健康状况 / 最近事件；POST = 切换、只做契约测试、清空统计。
   // 切换会立刻写回合体层配置（capabilities.slots），所以「安装后自动配置好」不依赖前端保存按钮。
@@ -5109,6 +5167,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname.startsWith(`${API_PREFIX}/persona`)) { await handlePersonaState(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/learning`)) { await handleLearning(req, res, url); return; }
     if (pathname === `${API_PREFIX}/voice/preview`) { await handleVoicePreview(req, res, url); return; }
+    // DeepSeek key 状态体检：语音（TTS/ASR）和联网搜索共用这把 key，失效时全部静默降级，
+    // 现在设置页能直接看见（2026-11-14 体检；余额接口免费，结果缓存 10 分钟）。
+    if (pathname === `${API_PREFIX}/deepseek-status`) { await handleDeepseekStatus(req, res); return; }
     if (pathname === `${API_PREFIX}/snowluma`) { await handleSnowLuma(req, res); return; }
     // 其余语音包管理路由（/voice/packs、/voice/tts-*）已随语音包子系统下线（2026-11 精简）。
     if (pathname.startsWith(`${API_PREFIX}/pet`)) { await handlePet(req, res, url); return; }
@@ -5176,24 +5237,70 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { object: 'list', data: [{ id: 'dfy-fish', object: 'model', owned_by: 'dsh-dfy' }] });
   });
   // ── QQ 桥接插件通道（AstrBot 插件 → DSH）──
-  // 入参 { key: "aiocqhttp:FriendMessage:1913962426" | "private:1913962426", text, timeoutMs }
+  // 入参 { key: "aiocqhttp:FriendMessage:1913962426" | "private:1913962426", text, timeoutMs,
+  //        voiceFile?/voiceUrl? —— 语音条只带标识，音频转写在这边做 }
   // 出参 { ok, key, sessionId, reply }
   localRoute('exact', '/dsh-surfcore/v1/qq-bridge/ask', async (req, res) => {
     if (req.method !== 'POST') { json(res, 405, { error: { message: '只支持 POST' } }); return; }
     const body = await readJsonBody(req);
+    // AstrBot 路径的名单闸：QQ 页白名单/黑名单写的是合体层，只有这里能执行
+    //（2026-11-14 体检：此前插件不查名单，整层失效）。被拒时插件侧静默跳过。
+    const accessVerdict = checkBridgeAccess({
+      key: body.key ?? body.umo ?? '',
+      senderId: String(body.senderId ?? '').trim(),
+      access: readUnified().config ?? {},
+    });
+    if (!accessVerdict.allowed) {
+      pluginLog(`[qq-bridge] 已按名单拦截 ${body.key ?? body.umo}：${accessVerdict.reason}`);
+      json(res, 403, { ok: false, error: 'blocked-by-allowlist', detail: accessVerdict.reason });
+      return;
+    }
     const text = String(body.text ?? '').trim();
-    if (!text) { json(res, 400, { error: { message: 'text 不能为空' } }); return; }
+    const voiceFile = String(body.voiceFile ?? '').trim();
+    const voiceUrl = String(body.voiceUrl ?? '').trim();
+    if (!text && !voiceFile && !voiceUrl) { json(res, 400, { error: { message: 'text 不能为空' } }); return; }
+    // 语音条 → 转写 → 当普通消息走对话（前缀让模型知道用户在说话，语气才会接得住）。
+    // 开关没开 / 转写失败都回 400，插件收到后回退成原来的占位文案。
+    let finalText = text;
+    if (!finalText && (voiceFile || voiceUrl)) {
+      const asr = readAsrSettings(readQqConfig().config);
+      if (!asr.enabled) { json(res, 400, { error: { message: 'voice-asr-disabled' } }); return; }
+      const heard = await transcribeQqVoice({
+        recordFile: voiceFile,
+        recordUrl: voiceUrl,
+        settings: asr,
+        log: (m) => pluginLog(m),
+      });
+      if (!heard?.text) {
+        // 连续失败要让主人知道（限频），不然用户那边只看到"先用文字跟我说一句吧"，
+        // 根因（key 失效/网关挂了）藏在这一行日志里几天都没人看（2026-11-14 体检）。
+        void notifyOwner({
+          category: 'voice-asr-failed',
+          text: 'QQ 语音条转写失败了。原因看日志 qq-voice-asr；常见是 DeepSeek key 失效或 SnowLuma 网关没起。语音设置页现在能直接看 key 状态。',
+        }).catch(() => {});
+        json(res, 400, { error: { message: 'voice-asr-failed' } });
+        return;
+      }
+      finalText = `（语音）${heard.text}`;
+    }
+    if (!finalText) { json(res, 400, { error: { message: 'text 不能为空' } }); return; }
     const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Number(body.timeoutMs), 300_000) : undefined;
     try {
       const result = await qqBridgeChat.ask({
         key: body.key ?? body.umo ?? '',
-        text,
+        text: finalText,
         timeoutMs,
         persona: body.persona ?? '',
         personaHash: body.personaHash ?? '',
       });
       json(res, 200, { ok: true, ...result });
     } catch (error) {
+      // 主人侧限频告警：以前这条链路任何失败（DSH 忙/回合报错）都只进日志，
+      // QQ 端表现为"已读不回"，一坏几天（2026-11-14 体检）。
+      void notifyOwner({
+        category: 'qq-bridge-ask',
+        text: `QQ 消息处理失败：${String(error?.message ?? error).slice(0, 160)}。用户那边表现为没回复；详情在插件日志 qq-bridge。`,
+      }).catch(() => {});
       json(res, 502, { ok: false, error: String(error?.message ?? error), key: String(body.key ?? '') });
     }
   }, { tokenKind: 'bridge' });

@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pruneAudioCache, writeAudioAtomic } from './voice-core.js';
 
 const SPACE_BASE = 'https://qwen-qwen3-tts.hf.space';
 const API_NAME = 'generate_voice_design';
@@ -146,8 +147,7 @@ export async function synthesizeOnlineToFile({
   const buf = Buffer.from(await audio.arrayBuffer());
   if (buf.length <= 44) throw new Error('在线语音返回了空音频');
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, file);
+  writeAudioAtomic(file, buf);
+  pruneAudioCache(outDir, { exts: ['.wav'] });
   return { path: file, durationMs: 0, cached: false };
 }

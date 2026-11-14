@@ -8,7 +8,8 @@
  * 输入 tts 的形状（两份配置都已对齐）：{ route, timeoutMs, cacheVersion, dir,
  *   edgeVoice, localBaseUrl, localVoice, cloudBaseUrl, cloudVoice,
  *   onlineDesc, onlineLanguage, doubaoApiKey, doubaoResourceId, doubaoAppId,
- *   doubaoToken, doubaoVoice, doubaoEncoding, qwenApiKey, qwenVoice, qwenModel, qwenLanguage }
+ *   doubaoToken, doubaoVoice, doubaoEncoding, qwenApiKey, qwenVoice, qwenModel, qwenLanguage,
+ *   deepseekApiKey, deepseekVoice }
  *
  * 返回 { path, route, contentType, durationMs, format, cached? }。
  */
@@ -17,11 +18,22 @@ import { synthesizeToFile as synthesizeVoxdToFile } from './voice-tts.js';
 import { synthesizeOnlineToFile, DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from './voice-online-tts.js';
 import { synthesizeDoubaoToFile } from './voice-doubao-tts.js';
 import { synthesizeQwenToFile } from './voice-qwen-tts.js';
+import { synthesizeDeepseekToFile, DEEPSEEK_DEFAULT_VOICE } from './voice-deepseek-tts.js';
 
-export const VOICE_ROUTES = ['edge', 'local', 'cloud', 'online', 'doubao', 'qwen'];
+export const VOICE_ROUTES = ['edge', 'local', 'cloud', 'online', 'doubao', 'qwen', 'deepseek'];
+
+// 无效 route 一次性告警：显式配置被无痕降级成 edge 是"换音色不生效/声音时好时坏"
+// 的另一种形态（2026-11-14 体检），至少要在日志里留个痕。
+const warnedRoutes = new Set();
 
 export function normalizeVoiceRoute(route) {
-  return VOICE_ROUTES.includes(String(route)) ? String(route) : 'edge';
+  const value = String(route);
+  if (VOICE_ROUTES.includes(value)) return value;
+  if (value && !warnedRoutes.has(value)) {
+    warnedRoutes.add(value);
+    console.warn(`[voice] 未知的音源 route「${value}」，已按 edge 处理（可选值：${VOICE_ROUTES.join(', ')}）`);
+  }
+  return 'edge';
 }
 
 export async function synthesizeToFileByRoute({
@@ -87,6 +99,17 @@ export async function synthesizeToFileByRoute({
       ...base,
     });
     return { path: r.path, cached: r.cached, durationMs: 0, route: 'online', format: 'wav', contentType: 'audio/wav' };
+  }
+
+  if (effective === 'deepseek') {
+    const r = await synthesizeDeepseekToFile({
+      text,
+      apiKey: tts.deepseekApiKey,
+      voice: voice || tts.deepseekVoice,
+      timeoutMs: timeout,
+      ...base,
+    });
+    return { path: r.path, cached: r.cached, durationMs: r.durationMs, route: effective, format: 'wav', contentType: 'audio/wav' };
   }
 
   if (effective === 'local' || effective === 'cloud') {

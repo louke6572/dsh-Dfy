@@ -11,6 +11,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pruneAudioCache, writeAudioAtomic } from './voice-core.js';
 
 const ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 const MAX_TEXT = 600;
@@ -88,8 +89,7 @@ export async function synthesizeQwenToFile({
   }
   if (!buf || buf.length <= 44) throw new Error('千问返回了空音频');
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, file);
+  writeAudioAtomic(file, buf);
+  pruneAudioCache(outDir, { exts: ['.wav'] });
   return { path: file, durationMs: 0, cached: false };
 }

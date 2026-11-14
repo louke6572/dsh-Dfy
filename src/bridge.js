@@ -54,7 +54,9 @@ import { DEFAULT_BASE_URL as DEFAULT_VOXD_URL } from './voice-tts.js';
 import { DEFAULT_ONLINE_DESC, DEFAULT_ONLINE_LANGUAGE } from './voice-online-tts.js';
 import { DOUBAO_DEFAULT_VOICE } from './voice-doubao-tts.js';
 import { QWEN_DEFAULT_VOICE, QWEN_DEFAULT_MODEL } from './voice-qwen-tts.js';
-import { synthesizeToFileByRoute } from './voice-routes.mjs';
+import { DEEPSEEK_DEFAULT_VOICE } from './voice-deepseek-tts.js';
+import { resolveSearchApiKey } from './web-search.js';
+import { synthesizeToFileByRoute, VOICE_ROUTES } from './voice-routes.mjs';
 import { redactLocalPaths } from './redact-paths.mjs';
 import { classifyVoiceError } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
@@ -2171,7 +2173,9 @@ async function main(options = {}) {
         //   local —— 本地 voxd 服务（GPT-SoVITS 等，默认 8765）
         //   cloud —— 火山引擎云端声音复刻（默认 8767）
         // 后两者都是「本机起一个 voxd 协议服务」，插件只当客户端，不捆绑任何模型。
-        route: ['edge', 'local', 'cloud', 'online', 'doubao', 'qwen'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'edge',
+        // 白名单直接 import voice-routes.mjs 的 VOICE_ROUTES——这里曾是手抄数组，
+        // 加音源时两份漂移过（2026-11-14 体检）。
+        route: VOICE_ROUTES.includes(String(v.tts?.route)) ? String(v.tts.route) : 'edge',
         // edge 路由的音色（readaloud 音色名，如 zh-CN-XiaoxiaoNeural）。
         edgeVoice: String(v.tts?.edgeVoice || DEFAULT_EDGE_VOICE),
         localBaseUrl: String(v.tts?.localBaseUrl || DEFAULT_VOXD_URL).trim() || DEFAULT_VOXD_URL,
@@ -2194,11 +2198,26 @@ async function main(options = {}) {
         qwenVoice: String(v.tts?.qwenVoice || QWEN_DEFAULT_VOICE),
         qwenModel: String(v.tts?.qwenModel || QWEN_DEFAULT_MODEL),
         qwenLanguage: String(v.tts?.qwenLanguage || 'Auto'),
+        // deepseek = DeepSeek 官方语音（2026-11 全家桶 API）。key 可以留空：
+        // 分发前用 withDeepseekVoiceKey 兜底复用联网搜索那把 DeepSeek key。
+        deepseekApiKey: String(v.tts?.deepseekApiKey || '').trim(),
+        deepseekVoice: String(v.tts?.deepseekVoice || DEEPSEEK_DEFAULT_VOICE),
         // 音色映射变了就 +1，让旧音频失效（否则"换了声音还在放老的"）
         cacheVersion: Number(v.tts?.cacheVersion) || 0,
         dir: path.join(STATE_DIR, 'voice-tts')
       }
     };
+  }
+
+  // DeepSeek 语音 key 兜底：设置页没单独填 key 时复用联网搜索那把 DeepSeek key
+  //（webSearch.apiKey → DEEPSEEK_API_KEY 环境变量 → DSH 凭据文件）。只在发给合成器的
+  // 局部副本上补，不回填 voiceCfg()，避免 key 泄进任何把配置序列化给前端的响应。
+  function withDeepseekVoiceKey(tts, routeOverride = '') {
+    const effective = String(routeOverride || tts?.route || '');
+    if (effective === 'deepseek' && tts && !tts.deepseekApiKey) {
+      return { ...tts, deepseekApiKey: resolveSearchApiKey(cfg.webSearch).key };
+    }
+    return tts;
   }
 
   /** 语音失败留痕（JSONL）：以前失败只抛一句人话、不进日志，事后无法判断谁的锅。 */
@@ -2258,14 +2277,14 @@ async function main(options = {}) {
    */
   async function synthesizeByRoute({ text, voice = '', rate = '+0%', pitch = '+0Hz', timeoutMs, route: routeOverride = '' } = {}) {
     const vc = voiceCfg();
-    // 六音源分发统一在 src/voice-routes.mjs（与桌宠朗读共用一份实现，避免两边漂移）。
+    // 七音源分发统一在 src/voice-routes.mjs（与桌宠朗读共用一份实现，避免两边漂移）。
     return synthesizeToFileByRoute({
       text,
       voice,
       rate,
       pitch,
       route: routeOverride,
-      tts: { ...vc.tts, dir: vc.tts.dir },
+      tts: withDeepseekVoiceKey({ ...vc.tts, dir: vc.tts.dir }, routeOverride),
       timeoutMs,
     });
   }
@@ -7367,7 +7386,9 @@ async function main(options = {}) {
                       ? '检查豆包 AppID / Access Token 是否填对，音色 voice_type 是否已开通'
                       : (route === 'qwen'
                         ? '检查百炼 API Key 是否有效、免费额度是否用完'
-                        : '需要联网；微软 Edge 端点偶尔超时，重试一次即可')))),
+                        : (route === 'deepseek'
+                          ? '检查 DeepSeek API Key（留空则自动复用联网搜索的 Key）和账户余额'
+                          : '需要联网；微软 Edge 端点偶尔超时，重试一次即可'))))),
             }, 502);
           }
           return;
@@ -9430,8 +9451,11 @@ async function main(options = {}) {
     }
     if (isGroup) recordFishWindow(key, '我', selfUserId, { isSelf: true });
     const parts = splitForQQ(safeMsg);
-    // 语料回流：把这一条和上一轮用户消息配成「他：… / 你：…」（筛选在 chat-corpus 里做）。
-    if (safeMsg) recordReply(key, safeMsg);
+    // 语料回流：只记**真正发出**的文本，且在发送成功之后记账。以前在发送前整条记账，
+    // 被刹车作废的分段、发送失败的、系统通知（recordCorpus:false）都会配上历史用户消息
+    // 学进语料——「他：A / 你：<从没说过的话>」（2026-11-14 体检，与旁白回流同类）。
+    const recordCorpus = opts.recordCorpus !== false;
+    const sentParts = [];
     lastSendFailed.delete(key);
     let partIndex = 0;
     for (const part of parts) {
@@ -9445,6 +9469,7 @@ async function main(options = {}) {
           if (!isFirstPart && cfg.humanize?.burstBrake !== false && cancelAt && cancelAt > burstStartedAt) { log(`[humanize] 对方又说话了，剩余分段不发 (${key})`); return; }
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          sentParts.push(part);
           noteSendSuccess(key);
           if (opts.mirror !== false && kind === 'private') mirrorPetMessage({ role: 'assistant', key, sender: '', text: part });
         })
@@ -9472,7 +9497,10 @@ async function main(options = {}) {
     // 返回「本批是否全部发送成功」。调用方（例如 B站动态同步）需要据此决定
     // 能不能把这条内容标记为已推送 —— 以前返回 void，发送失败也会被当成成功，
     // 于是动态永久丢失且日志还写「已同步」。
-    return sendChain.then(() => lastSendFailed.get(key) !== true);
+    return sendChain.then(() => {
+      if (recordCorpus && sentParts.length) recordReply(key, sentParts.join(' '));
+      return lastSendFailed.get(key) !== true;
+    });
   }
 
   /** 上一批发往该会话的消息是否全部成功。 */
@@ -9665,7 +9693,7 @@ async function main(options = {}) {
 
   // 分条发送：与 sendToQQ 共用同一 sendChain，严格顺序；条间随机间隔，
   // 有概率使用长间隔（错落感）；最后一条后不再 sleep。
-  function sendBurstToQQ(key, messages, socialCfgOrMin, maybeMax) {
+  function sendBurstToQQ(key, messages, socialCfgOrMin, maybeMax, opts = {}) {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
     let min, max, longProb = 0, longMin = 0, longMax = 0;
@@ -9704,7 +9732,9 @@ async function main(options = {}) {
       if (prepared.text) cleaned.push(prepared.text);
       if (prepared.images.length) pendingImages.push(...prepared.images);
     }
-    if (cleaned.length) recordReply(key, cleaned.join(' '));
+    // 语料回流：与 sendToQQ 同口径——只记真正发出的分段，发送后记账
+    const recordCorpus = opts.recordCorpus !== false;
+    const sentParts = [];
     for (let i = 0; i < cleaned.length; i++) {
       const msg = cleaned[i];
       const isLast = i === cleaned.length - 1;
@@ -9721,6 +9751,7 @@ async function main(options = {}) {
           }
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          sentParts.push(msg);
           noteSendSuccess(key);
           sent.push(msg);
         })
@@ -9754,7 +9785,10 @@ async function main(options = {}) {
     if (pendingStickerRefs.length) {
       sendChain = sendChain.then(() => sendStickerRef(key, pendingStickerRefs[0]));
     }
-    return sendChain.then(() => sent);
+    return sendChain.then(() => {
+      if (recordCorpus && sentParts.length) recordReply(key, sentParts.join(' '));
+      return sent;
+    });
   }
 
 
@@ -11462,6 +11496,23 @@ async function main(options = {}) {
     });
     while (arr.length > 500) arr.shift();
     fishChatWindows.set(key, arr);
+  }
+
+  /** 群最近 N 分钟的消息条数（不含自己发的）——接话打分的 recentCount。
+   *  以前调用点硬编码 0：「群里正热不接」和「提问直回」两条规则从未生效过
+   *  （2026-11-14 体检），大群里机器人会跟着刷屏。数据源是鱼群保护的运行时表；
+   *  fishGuard 整体关闭时没有数据，按 0 处理（与旧行为一致）。 */
+  function recentGroupMessageCount(key, { windowMs = 10 * 60_000 } = {}) {
+    const arr = fishChatWindows.get(String(key ?? ''));
+    if (!Array.isArray(arr) || !arr.length) return 0;
+    const since = Date.now() - windowMs;
+    let n = 0;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const entry = arr[i];
+      if (!entry || entry.time < since) break; // 按 push 顺序存放，倒序遇到旧的就可以停
+      if (!entry.isSelf) n += 1;
+    }
+    return n;
   }
   async function ensureFishGroupName(groupId) {
     const gid = String(groupId ?? '');
@@ -13577,7 +13628,8 @@ async function main(options = {}) {
 
   async function sendGroupWithAt(key, qq, text) {
     const [kind, id] = key.split(':');
-    if (kind !== 'group') return sendToQQ(key, text);
+    // 主动搭话不是对某条用户消息的回复，不进语料（5 分钟配对窗口内的会错配）
+    if (kind !== 'group') return sendToQQ(key, text, { recordCorpus: false });
     // 主动搭话里也可能带表情包（Markdown 图片行）：统一交给出站管道拆，
     // 文字随 @ 发，图片/表情补发。
     const prepared = prepareReply(text, {
@@ -13657,7 +13709,9 @@ async function main(options = {}) {
     if (cfg.chat?.proactive?.enabled === false) return;
     // 幂等：已在跑就不再叠一个 interval（见 proactiveTimer 的注释）。
     if (proactiveTimer) return;
-    proactiveTimer = setInterval(() => { checkProactiveAt().catch(() => {}); }, 5 * 60 * 1000);
+    // 主动搭话循环以前 .catch(() => {})：presenceState/allowed 抛错时该轮无声消失，
+    // 表现为"她偶尔不主动冒泡"且零留痕（2026-11-14 体检）
+    proactiveTimer = setInterval(() => { checkProactiveAt().catch((error) => log(`[proactive] 搭话循环异常：${String(error?.message ?? error).slice(0, 160)}`)); }, 5 * 60 * 1000);
     proactiveTimer.unref?.();
     log(`[搭话] 已启动：每群每小时最多一次主动 @（至少 ${cfg.chat?.proactive?.minMessages ?? 10} 条上下文）`);
   }
@@ -16210,7 +16264,7 @@ async function main(options = {}) {
         selfNames: [selfNickname, selfDisplayName],
         isOwner,
         quoteTargetIsSelf,
-        recentCount: 0,
+        recentCount: recentGroupMessageCount(key),
       });
       appendActivity(`${key} [humanize] 接话打分 ${verdict.score}（${verdict.reasons.join('、')}）→ ${verdict.reply ? '接' : '不接'}`);
       if (!verdict.reply) {
@@ -16286,7 +16340,9 @@ async function main(options = {}) {
       if (accepted.result.value.command.text) await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
       return;
     }
-    if (cfg.ackMessage && currentMode !== 'reserved2') await sendToQQ(key, cfg.ackMessage);
+    // ack 是「收到，正在思考」类流程提示，不是对用户的回复——绝不进语料
+    //（自定义 ackMessage 文案没固定指纹，必须显式关）
+    if (cfg.ackMessage && currentMode !== 'reserved2') await sendToQQ(key, cfg.ackMessage, { recordCorpus: false });
     log(`已投递 ${key}: ${promptText.length} 字${needFullContext ? '（含人设/记忆）' : '（仅新消息）'} · ${promptText.slice(0, 60)}${promptText.length > 60 ? '…' : ''}`);
   }
 
@@ -16929,9 +16985,9 @@ async function main(options = {}) {
                   log(`agent 回复 (${key}) ${plain.length} 字 → ${messages.length} 条`);
                   appendActivity(`${key} agent 回复：${messages[0].slice(0, 80)}${messages.length > 1 ? '（分' + messages.length + '条）' : ''}${messages[0].length > 80 ? '…' : ''}`);
                   if (messages.length > 1) {
-                    await sendBurstToQQ(key, messages, cfg.social);
+                    await sendBurstToQQ(key, messages, cfg.social, undefined, { recordCorpus: false });
                   } else {
-                    await sendToQQ(key, messages[0]);
+                    await sendToQQ(key, messages[0], { recordCorpus: false });
                     void sendNekoAfterReply(key, messages[0]);
                   }
                   // 发言后刷新活跃时间，并调度可能的二次补刀
@@ -16966,7 +17022,12 @@ async function main(options = {}) {
                   turnSendToolState.delete(frame.sessionId);
                   const st2 = getSocialV2State(key);
                   const directWake = String(key).startsWith('private:') || isHardDirectWakeReason(st2.lastWakeReason);
-                  const looksInternal = /【(目的|需求|计划|思考|内部|判断)/.test(plain);
+                  // 内部输出识别面放宽：模型不一定按【目的】模板写计划（「（内部）…」「## 计划」等），
+                  // 识别不到会把内部计划整段降级直发进聊天（2026-11-14 体检）。
+                  const looksInternal = /【(?:目的|需求|计划|思考|内部|判断)/.test(plain)
+                    || /^（内部/.test(plain)
+                    || /(?:^|\n)#{1,3}\s*(?:计划|内部|思考)/.test(plain)
+                    || /^\s*(?:plan|internal)\s*[:：]/im.test(plain);
                   if (toolState && toolState.sent === false && directWake && !looksInternal && plain.trim().length <= 500) {
                     log(`[reserved2] 本轮未调用发送工具，私聊降级直发 (${key})`);
                     appendActivity(`${key} [reserved2] 未调用发送工具，已降级直发`);

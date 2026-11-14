@@ -30,7 +30,9 @@ import YAML from 'js-yaml';
 import { resolveSafeAddresses, safeFetch } from './safe-fetch.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
-const DEFAULT_MODEL = 'deepseek-v4-flash';
+// 2026-11 官方文档：deepseek-v4-flash 已下线（请求仍会被兼容层路由，但名义上废了），
+// 统一叫 deepseek-flash（DeepSeek-V4.1-Flash-1017）。
+const DEFAULT_MODEL = 'deepseek-flash';
 const DEFAULT_API_VERSION = '2023-06-01';
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY';
 const DEFAULT_TIMEOUT_MS = 35000;

@@ -85,20 +85,33 @@ class DshBridge(Star):
             logger.debug(f"[dsh-bridge] 读取当前人格失败：{exc!r}")
             return "", ""
 
-    async def _ask_dsh(self, key: str, text: str) -> str:
+    def _sender_id(self, event: AstrMessageEvent) -> str:
+        """发送者 QQ 号（黑名单 deny.users 按**人**拦需要它，会话级字段不带发送者）。"""
+        try:
+            return str(event.get_sender_id() or "").strip()
+        except Exception:
+            return ""
+
+    async def _ask_dsh(self, key: str, text: str, extra: dict[str, Any] | None = None, sender_id: str = "") -> str | None:
+        """转发给 DSH。返回：None = 调用失败（网络/参数/DSH 报错）；字符串 = DSH 的回复（可能为空）。
+        把"失败"和"DSH 想完但没说话"区分开：文字消息两者都静默，语音条失败时要回退占位文案。
+        DSH 侧问题（文件缺失/地址异常）同样返回 None——内部错误串当角色台词发出去是
+        2026-11-14 体检点名修掉的（群里会看到一句旁白腔的"大脑还没就绪"）。"""
         host = _read_host()
         if not host:
-            return "（她的 DSH 大脑还没就绪：找不到 dsh-bridge.json，先确认 DSH 里 dsh-Dfy 插件在跑）"
+            logger.warning("[dsh-bridge] 调用失败：找不到 dsh-bridge.json（DSH 没在跑或插件数据目录不对）")
+            return None
         base = str(host.get("baseUrl") or "").rstrip("/")
         api = str(host.get("path") or "/dsh-surfcore/v1/qq-bridge/ask")
         token = str(host.get("token") or "")
         if not base or not token:
-            return "（她的 DSH 大脑还没就绪：桥接地址或令牌为空）"
+            logger.warning("[dsh-bridge] 调用失败：桥接地址或令牌为空")
+            return None
         # 发现文件可能被同机进程篡改：只允许 http://回环地址，防止把 token 发到任意主机
         parsed = urlparse(base)
         if parsed.scheme != "http" or (parsed.hostname or "") not in ("127.0.0.1", "localhost", "::1"):
             logger.warning("[dsh-bridge] dsh-bridge.json 的 baseUrl 不是本机回环，已拒绝")
-            return "（她的 DSH 桥接地址异常，已拒绝连接：请在 DSH 里重新加载 dsh-Dfy 插件）"
+            return None
         timeout_s = float(host.get("timeoutSeconds") or DEFAULT_TIMEOUT_S) + 20
         persona, persona_hash = await self._active_persona()
         payload = {
@@ -107,16 +120,72 @@ class DshBridge(Star):
             "timeoutMs": DEFAULT_TIMEOUT_S * 1000,
             "persona": persona,
             "personaHash": persona_hash,
+            # 黑名单 deny.users 按发送者拦；拿不到就空串（DSH 侧只按会话拦）
+            "senderId": str(sender_id or ""),
         }
+        if extra:
+            payload.update(extra)
         try:
             data = await asyncio.to_thread(_post_json, base + api, payload, token, timeout_s)
         except Exception as exc:  # 网络/超时：只写日志，不往聊天里发内部错误话术
             logger.warning(f"[dsh-bridge] 调用 DSH 失败：{exc!r}")
-            return ""
+            return None
         if not data.get("ok"):
             logger.warning(f"[dsh-bridge] DSH 返回错误：{str(data.get('error'))[:200]}")
-            return ""
+            return None
         return str(data.get("reply") or "").strip()
+
+    def _extract_voice(self, event: AstrMessageEvent) -> dict[str, str] | None:
+        """找出消息里的语音段（record），只取标识不碰音频。语音下载/解码/转写全在 DSH 侧。
+        兼容两条来源：message_obj.raw_message（aiocqhttp 平台是 OneBot 消息数组）和
+        AstrBot 的消息组件列表（Record 组件有 file/url 属性）。"""
+        try:
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            if isinstance(raw, list):
+                for seg in raw:
+                    if isinstance(seg, dict) and str(seg.get("type") or "").lower() == "record":
+                        data = seg.get("data") or {}
+                        fid = str(data.get("file") or "").strip()
+                        furl = str(data.get("url") or "").strip()
+                        if fid or furl:
+                            return {"file": fid, "url": furl}
+            comps = list(getattr(getattr(event, "message_obj", None), "message", None) or [])
+            for comp in comps:
+                ctype = str(getattr(comp, "type", "") or type(comp).__name__).lower()
+                if ctype == "record":
+                    fid = str(getattr(comp, "file", "") or "").strip()
+                    furl = str(getattr(comp, "url", "") or "").strip()
+                    if fid or furl:
+                        return {"file": fid, "url": furl}
+        except Exception as exc:
+            logger.debug(f"[dsh-bridge] 识别语音段失败：{exc!r}")
+        return None
+
+    async def _ask_voice(self, event: AstrMessageEvent, key: str) -> str | None:
+        """语音条 → DSH 转写 → 回复。
+        返回 None = 没走语音通道（没有 record 段 / 设置里没开语音识别）→ 调用方回退占位文案；
+        "" = 走了通道但没话可说（失败或空回复）→ 静默；其余为回复文本。"""
+        voice = self._extract_voice(event)
+        if not voice:
+            return None
+        host = _read_host()
+        if not isinstance(host, dict) or host.get("voiceAsrEnabled") is not True:
+            return None
+        extra: dict[str, Any] = {}
+        if voice.get("file"):
+            extra["voiceFile"] = voice["file"]
+        if voice.get("url"):
+            extra["voiceUrl"] = voice["url"]
+        if not extra:
+            return None
+        logger.debug("[dsh-bridge] 收到 QQ 语音条 → DSH 转写")
+        try:
+            typing = getattr(event, "send_typing", None)
+            if callable(typing):
+                await typing()
+        except Exception:
+            pass
+        return await self._ask_dsh(key, "", extra=extra, sender_id=self._sender_id(event))
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -129,21 +198,29 @@ class DshBridge(Star):
         umo = str(getattr(event, "unified_msg_origin", "") or "")
         if not umo or umo.startswith("webchat"):
             return
-        text = str(getattr(event, "message_str", "") or "").strip()
-        if not text:
-            # 纯图片/表情/语音等非文本消息：v1 不转发（避免把空文本灌进会话），
-            # 但**不能什么都不回**——以前直接 return，用户发图给机器人会以为它死了。
-            try:
-                yield event.plain_result("（图片/语音我收到啦，先用文字跟我说一句吧）")
-            except Exception:
-                pass
-            return
         # 关键：跳过 AstrBot 默认 LLM，否则会和 DSH 的回复变成两条。
+        # 对语音条路径同样生效（转写成文字走的就是同一条 DSH 通道）。
         try:
             event.should_call_llm(False)
         except Exception:
             event.call_llm = False
             logger.debug("[dsh-bridge] should_call_llm 不可用，已退回设置 call_llm=False")
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text:
+            # 纯图片/表情/语音等非文本消息。语音条且「语音识别」开着时转成文字照常对话；
+            # 其它情况保持占位文案——**不能什么都不回**，用户发图给机器人会以为它死了。
+            voice_reply = await self._ask_voice(event, umo)
+            if voice_reply is None:
+                try:
+                    yield event.plain_result("（图片/语音我收到啦，先用文字跟我说一句吧）")
+                except Exception:
+                    pass
+                return
+            if voice_reply:
+                yield event.plain_result(voice_reply)
+            else:
+                logger.info("[dsh-bridge] 语音转写后没有文本输出，跳过发送")
+            return
         logger.debug("[dsh-bridge] 收到 QQ 消息 → DSH")
         # 等待 DSH 想完再回：先让 QQ 侧显示「正在输入」，明显降低体感延迟
         try:
@@ -152,7 +229,7 @@ class DshBridge(Star):
                 await typing()
         except Exception:
             pass
-        reply = await self._ask_dsh(umo, text)
+        reply = await self._ask_dsh(umo, text, sender_id=self._sender_id(event))
         if reply:
             yield event.plain_result(reply)
         else:

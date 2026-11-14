@@ -40,6 +40,13 @@ const PLACEHOLDER_ONLY = /^\[(?:表情|表情包|动画表情|商城表情|图�
  * （2026-11-14 实测：两句旁白回流进人格后，她开始照着原句说）。
  */
 const NARRATION = /(?:^|[，。；、\s])(?:我|她|他)(?:就|又|也)?(?:回|发)(?:了|个|张|一句)|(?:正好|刚好)接(?:上|着)?[^，。]{0,8}话题|(?:话题|梗|聊天|对话)[^，。]{0,10}(?:收尾|结束)|^收尾了?$/;
+/**
+ * 系统通知 / 管理回执：这些文本同样经 sendToQQ 出站。以前只拒 ⚠️/⏺/〔/[ 开头，
+ * ⏳⏰⏹️❓✅❌ 和不带前缀的管理话术（「管理命令仅管理员可用」）全漏网，配上用户消息
+ * 就学进语料——和旁白回流同类（2026-11-14 体检）。宁可多拒，语料宁缺毋滥。
+ */
+const SYSTEM_NOTICE_PREFIX = /^(?:⚠️|⏺|⏳|⏰|⏹|❓|✅|❌|🔐|〔|\[|【|🤔)/;
+const SYSTEM_NOTICE_TEXT = /^(?:角色切换仅管理员|管理命令仅管理员|已重置会话|已清除角色|已切换角色|已进入静默模式|已退出静默模式|已通过审批|已拒绝审批|本条回复因疑似|消息未被接受|系统服务重启中|等待回答超时|本轮已停止|回答提交失败|审批回执提交失败|审批仅管理员|这条没接上|今天自动回复的次数|请回复「(通过|拒绝)」|收到，正在思考)/;
 
 function clean(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -65,7 +72,7 @@ export function noteIncoming(key, text, { eligible = true } = {}) {
 }
 
 /** 这条回复值不值得学。全部是确定性规则，宁可少收。 */
-function acceptPair(userText, replyText) {
+export function acceptPair(userText, replyText) {
   const u = clean(userText);
   const r = clean(replyText);
   if (!u || !r) return false;
@@ -75,7 +82,7 @@ function acceptPair(userText, replyText) {
   if (PLACEHOLDER_ONLY.test(u)) return false; // 对方只发了个 [表情28]，没有可配对的内容
   if (/^(?:他|她|我)[：:]/.test(r)) return false; // 把对话标签「他：…」当回复
   if (NARRATION.test(r)) return false; // 自我旁白，不是在对人说话
-  if (/^(⚠️|⏺|〔|\[)/.test(r)) return false; // 系统通知 / 标记
+  if (SYSTEM_NOTICE_PREFIX.test(r) || SYSTEM_NOTICE_TEXT.test(r)) return false; // 系统通知 / 管理回执
   if (AI_SMELL.test(r)) return false;
   if (FILLER_ONLY.test(r)) return false;
   if (!/[\u4e00-\u9fa5]/.test(r)) return false; // 纯符号/纯英文

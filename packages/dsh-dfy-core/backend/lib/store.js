@@ -216,11 +216,19 @@ export const SECRET_PATHS = new Set([
   // 面板直连 SnowLuma 控制台用的密码：只在后端用，设置页永远只看得到掩码。
   'snowluma.webuiPassword',
   'webSearch.apiKey',
+  // 贴吧手动兜底凭据（tieba.js resolveTiebaAuth 读 unified.tieba.bduss）：
+  // BDUSS 等于百度账号的完整登录态，明文回显进 GET /config 是凭据泄漏（2026-11-14 体检）。
+  // tieba.token 目前无消费方，一并掩码防手动写入后被回显。
+  'tieba.bduss',
+  'tieba.token',
   'consoleToken',
-  // 第三方 TTS 凭证：只在后端合成时用，设置页回读一律给掩码（保存时自动还原）。
+  // 第三方 TTS 凭证：只在后端合成/识别时用，设置页回读一律给掩码（保存时自动还原）。
   'socialV2.voice.tts.doubaoApiKey',
   'socialV2.voice.tts.doubaoToken',
   'socialV2.voice.tts.qwenApiKey',
+  'socialV2.voice.tts.deepseekApiKey',
+  // ASR 没有独立 key 字段（复用上面那把），这里兜底防手动写进配置文件时被明文回显。
+  'socialV2.voice.asr.deepseekApiKey',
   // 2026-11 审计：GitHub token 存在合体层（updates.githubToken），但没进这份清单，
   // 于是 GET /config 的 unified 分支把它原样回了出去（qq/bili 分支都脱敏、只有它漏）。
   // 合体层目前唯一的秘密就是它。

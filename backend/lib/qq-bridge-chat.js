@@ -52,6 +52,43 @@ export function sessionIdForKey(key) {
   return `qq-${String(key).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
 }
 
+/**
+ * AstrBot 插件路径的访问控制。
+ *
+ * 为什么在这层做：QQ 页的白名单/黑名单写的是**合体层**（unified），而内置桥的
+ * allowed()/senderBlocked() 只认 QQ config.json 且在 AstrBot 模式下不在链路上——
+ * 插件接管所有消息却不查名单，等于整层失效（2026-11-14 体检确认：「填了黑名单还理人」）。
+ *
+ * 语义与内置桥**有意不同**：内置桥是「名单空 + allowAllWhenEmpty=false → 全拒」，
+ * 这里是「名单空 → 放行」。原因：插件模式上线以来一直是全放行，突然改成 fail-closed
+ * 会把所有群聊静音（本机 qq 层只有私聊管理员一条，群全是空的）；而黑名单在任何
+ * 配置状态下都必须生效——这正是用户填它的目的。
+ */
+export function checkBridgeAccess({ key, senderId, access } = {}) {
+  const norm = normalizeQqKey(key);
+  // local: 是设置页自测等本机用途，不是真实 QQ 会话，不拦
+  if (!norm || norm.startsWith('local:')) return { allowed: true, reason: '' };
+  const m = /^(private|group):(.+)$/.exec(norm);
+  if (!m) return { allowed: true, reason: '' };
+  const kind = m[1];
+  const id = String(m[2] ?? '').trim();
+  const deny = access && typeof access.deny === 'object' && access.deny ? access.deny : {};
+  const allow = access && typeof access.allow === 'object' && access.allow ? access.allow : {};
+  const hit = (list, value) => Array.isArray(list) && list.map(String).includes(String(value ?? '').trim());
+  // deny.users 按**发送者**拦：群里同样生效（与内置桥 senderBlocked 同口径）
+  if (senderId && hit(deny.users, senderId)) {
+    return { allowed: false, reason: `发送者 ${senderId} 在黑名单 deny.users 里` };
+  }
+  if (hit(kind === 'group' ? deny.groups : deny.private, id)) {
+    return { allowed: false, reason: `会话 ${norm} 在黑名单里` };
+  }
+  const allowList = kind === 'group' ? allow.groups : allow.private;
+  if (Array.isArray(allowList) && allowList.length > 0 && !hit(allowList, id)) {
+    return { allowed: false, reason: `会话 ${norm} 不在白名单里` };
+  }
+  return { allowed: true, reason: '' };
+}
+
 export function createQqBridgeChat({ ctx, log = () => {}, getBaseUrl, resolveModel = null } = {}) {
   /** sessionId -> Set<waiter> */
   const pending = new Map();
@@ -100,7 +137,14 @@ export function createQqBridgeChat({ ctx, log = () => {}, getBaseUrl, resolveMod
         if (!waiters?.size) return;
         for (const waiter of waiters) {
           const done = waiter.collector.push(event);
-          if (done && typeof done?.text === 'string') settle(waiter, done.text);
+          if (!done) continue;
+          // turn/end 带错误 reason ≠「她想完但没说话」：以前这里照常 resolve('')，
+          // 模型报错被折叠成 HTTP 200 空回复，插件侧只剩一句"没有文本输出"（2026-11-14 体检）。
+          if (done.reason && typeof done.reason === 'object' && String(done.reason.kind) === 'error') {
+            settleError(waiter, String(done.reason.message ?? done.reason.code ?? '回合失败'));
+            continue;
+          }
+          if (typeof done?.text === 'string') settle(waiter, done.text);
         }
       } catch (error) {
         log('[qq-bridge] 事件处理失败：', String(error?.message ?? error));
@@ -116,6 +160,16 @@ export function createQqBridgeChat({ ctx, log = () => {}, getBaseUrl, resolveMod
     }
     if (waiter.timer) clearTimeout(waiter.timer);
     waiter.resolve(String(text ?? '').trim());
+  }
+
+  function settleError(waiter, message) {
+    const waiters = pending.get(waiter.sessionId);
+    if (waiters) {
+      waiters.delete(waiter);
+      if (!waiters.size) pending.delete(waiter.sessionId);
+    }
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.reject(new Error(`DSH 回合失败：${String(message ?? '').slice(0, 200)}`));
   }
 
   async function createSessionWithController(controller, sessionId, cwd) {

@@ -323,15 +323,10 @@
       "autoReadback": true,
       "tts": {
         "enabled": false,
-        "baseUrl": "http://127.0.0.1:8765",
         "timeoutMs": 60000,
         "maxChars": 120,
         "character": "",
-        "route": "local",
-        "endpoints": {
-          "local": "http://127.0.0.1:8765",
-          "cloud": "http://127.0.0.1:8767"
-        }
+        "route": "edge"
       },
       "trigger": {
         "who": "owner",
@@ -379,7 +374,7 @@
     "apiKey": "",
     "apiKeyEnv": "DEEPSEEK_API_KEY",
     "baseURL": "",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "maxUses": 5,
     "maxTokens": 4096,
     "maxResults": 8,

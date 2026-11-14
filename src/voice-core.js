@@ -9,6 +9,7 @@
 // 在受限沙箱（DSH workspace-write / 只读模式）里 spawn 一个 stdio:pipe 的子进程会直接
 // EPERM，而"继承 stdio + 写文件"是允许的。
 import fs from 'node:fs';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -537,4 +538,77 @@ export function writeAudioAtomic(file, data) {
     try { fs.unlinkSync(tmp); } catch {}
     throw new Error(`写入语音缓存失败：${error?.message ?? error}`);
   }
+}
+
+/** 把 "fetch failed" 这类一层皮报错拆开，把底层错误码（ECONNRESET/ENOTFOUND…）透出来。 */
+function describeNetError(error) {
+  const code = String(error?.cause?.code ?? error?.code ?? '').trim();
+  const base = String(error?.message ?? error);
+  return new Error(code && !base.includes(code) ? `${base}（${code}）` : base);
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+/**
+ * 语音链路出站 HTTPS（node:https 直连，DeepSeek 语音/余额接口专用）。
+ *
+ * 为什么不用 fetch：DSH 宿主进程里插件后端的 fetch 出站实测失败（同机 CLI 用同样的
+ * 请求却正常，2026-11-14 语音设置页"fetch failed"），宿主很可能给全局 fetch 挂了自己的
+ * 分发器/代理；node:https 不经过 undici 分发器，与 web-search.js 的 DeepSeek 调用
+ * 同一条久经使用的通道。localhost 的调用继续用 fetch（宿主分发器对回环放行）。
+ *
+ * 重试：2026-11-14 实测本机出站走代理软件的 fake-ip 隧道（DNS 解析到 198.18.x.x），
+ * 到 DeepSeek 的 TLS 握手会**间歇性**被重置（ECONNRESET，秒级抖动：curl 失败后几秒
+ * node 又能连上）。所以默认带 2 次重试，网络级失败（不是 HTTP 状态码）指数退避后再试；
+ * 连续失败时错误信息里带底层错误码，用户能看到"代理不稳"的方向。
+ *
+ * body 为 Buffer/字符串（自动算 content-length）；返回 { status, headers, body(Buffer) }；
+ * 响应超 maxBytes 按截断返回（truncated: true）。
+ */
+export async function httpRequest({ url, method = 'GET', headers = {}, body = null, timeoutMs = 60000, maxBytes = 128 * 1024 * 1024, retries = 2, retryDelayMs = 600 } = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (attempt > 0) await sleep(retryDelayMs * attempt);
+    try {
+      return await httpRequestOnce({ url, method, headers, body, timeoutMs, maxBytes });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function httpRequestOnce({ url, method, headers, body, timeoutMs, maxBytes }) {
+  return new Promise((resolve, reject) => {
+    let target;
+    try { target = new URL(String(url)); } catch { reject(new Error(`URL 不合法：${String(url)}`)); return; }
+    if (target.protocol !== 'https:') { reject(new Error(`只支持 https（收到 ${target.protocol}）`)); return; }
+    const req = https.request({
+      hostname: target.hostname,
+      port: target.port || 443,
+      path: target.pathname + target.search,
+      method,
+      headers: { ...headers, ...(body != null ? { 'content-length': Buffer.byteLength(body) } : {}) },
+      servername: target.hostname,
+      rejectUnauthorized: true,
+      timeout: timeoutMs,
+    }, (res) => {
+      const status = res.statusCode || 0;
+      const chunks = [];
+      let size = 0;
+      let truncated = false;
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maxBytes) { truncated = true; res.destroy(); return; }
+        chunks.push(chunk);
+      });
+      res.on('error', (error) => reject(describeNetError(error)));
+      res.on('aborted', () => reject(describeNetError(new Error('响应中途断开'))));
+      res.on('end', () => resolve({ status, headers: res.headers, body: Buffer.concat(chunks), truncated }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（>${Math.round(timeoutMs / 1000)}s）`)));
+    req.on('error', (error) => reject(describeNetError(error)));
+    if (body != null) req.write(body);
+    req.end();
+  });
 }

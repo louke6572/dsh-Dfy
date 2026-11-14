@@ -106,6 +106,8 @@ export async function synthesizeToFileByRoute({
       text,
       apiKey: tts.deepseekApiKey,
       voice: voice || tts.deepseekVoice,
+      // requestImpl 仅测试注入用；生产不传，走默认 node:https 直连
+      requestImpl: tts.requestImpl,
       timeoutMs: timeout,
       ...base,
     });

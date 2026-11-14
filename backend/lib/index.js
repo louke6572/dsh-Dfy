@@ -53,6 +53,7 @@ import { createRawChat, openAiCompletion, openAiStreamChunks } from './dfy-raw-c
 import { checkBridgeAccess, createQqBridgeChat } from './qq-bridge-chat.js';
 import { readAsrSettings, transcribeQqVoice } from './qq-voice-asr.js';
 import { notifyOwner } from './owner-alert.js';
+import { httpRequest } from '../../src/voice-core.js';
 import {
   configureDouyinChatModel, configureDouyinLog, disposeDouyin, douyinAutoTick, douyinChatConfigure,
   douyinChatContacts, douyinChatEnable, douyinChatMinimize, douyinChatModels, douyinChatRead, douyinChatRecover, douyinChatResume, douyinChatSetModel, douyinChatSetup, douyinChatStart, douyinChatStatus, douyinChatStop,
@@ -3229,14 +3230,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       payload.hint = '读不到 DeepSeek key：检查联网搜索的 Key 配置（webSearch.apiKey / DEEPSEEK_API_KEY / DSH 凭据）';
     } else {
       try {
-        const r = await fetch('https://api.deepseek.com/user/balance', {
-          headers: { authorization: `Bearer ${settings.apiKey}` },
-          signal: AbortSignal.timeout(15_000),
+        // node:https 直连：DSH 宿主进程里 fetch 出站实测失败（fetch failed），与
+        // TTS/ASR/联网搜索走同一通道；底层错误码已透出（如 ECONNRESET）
+        const r = await httpRequest({
+          url: 'https://api.deepseek.com/user/balance',
+          headers: { authorization: `Bearer ${settings.apiKey}`, accept: 'application/json' },
+          timeoutMs: 15_000,
+          maxBytes: 1 * 1024 * 1024,
         });
-        const data = await r.json().catch(() => null);
+        let data = null;
+        try { data = JSON.parse(r.body.toString('utf8')); } catch { /* 非 JSON 按无数据处理 */ }
         if (r.status === 401) {
           payload.hint = 'key 已失效（DeepSeek 返回 401）：去 platform.deepseek.com/api_keys 重新生成，并更新到 DSH 凭据';
-        } else if (r.ok && data?.is_available !== undefined) {
+        } else if (r.status >= 200 && r.status < 300 && data?.is_available !== undefined) {
           const info = Array.isArray(data.balance_infos) ? data.balance_infos[0] : null;
           payload.balance = info ? { currency: info.currency, total: info.total_balance } : null;
           payload.ok = data.is_available === true;
@@ -3245,7 +3251,13 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           payload.hint = `余额接口返回 HTTP ${r.status}，稍后再试`;
         }
       } catch (error) {
-        payload.hint = `连不上 DeepSeek：${String(error?.message ?? error).slice(0, 120)}`;
+        const message = String(error?.message ?? error);
+        // 2026-11-14 实测：本机走代理软件的 fake-ip 隧道，到 DeepSeek 的连接会间歇性被
+        // 重置——用户侧的第一修法是换代理节点或把 DeepSeek 设为直连规则
+        const proxyHint = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|超时/.test(message)
+          ? '（大概率是代理节点到 DeepSeek 不稳：换个节点，或把 api.deepseek.com 设为直连规则后刷新）'
+          : '';
+        payload.hint = `连不上 DeepSeek：${message.slice(0, 120)}${proxyHint}`;
       }
     }
     deepseekStatusCache = { at: Date.now(), payload };

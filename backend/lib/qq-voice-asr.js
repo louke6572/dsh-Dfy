@@ -15,8 +15,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { resolveFfmpeg } from '../../src/voice-core.js';
+import { httpRequest, resolveFfmpeg } from '../../src/voice-core.js';
 import { resolveSearchApiKey } from '../../src/web-search.js';
 
 const ASR_ENDPOINT = 'https://api.deepseek.com/v1/tools/asr';
@@ -140,16 +141,28 @@ export async function transcribeQqVoice({ recordFile = '', recordUrl = '', setti
     const wav = fs.readFileSync(wavPath);
     if (wav.length <= 44 || wav.length > MAX_UPLOAD_BYTES) throw new Error(`转出的 WAV 尺寸异常（${wav.length}B）`);
 
-    const form = new FormData();
-    form.append('file', new Blob([wav], { type: 'audio/wav' }), 'voice.wav');
-    const res = await fetch(ASR_ENDPOINT, {
+    // ASR 上传走 node:https（与 TTS 同通道）：DSH 宿主进程里 fetch 出站实测失败，
+    // multipart 手工拼装（FormData 依赖 fetch 生态）
+    const boundary = `----dshdfy-asr-${crypto.randomBytes(12).toString('hex')}`;
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="voice.wav"\r\nContent-Type: audio/wav\r\n\r\n`),
+      wav,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const res = await httpRequest({
+      url: ASR_ENDPOINT,
       method: 'POST',
-      headers: { authorization: `Bearer ${settings.apiKey}` },
-      body: form,
-      signal: AbortSignal.timeout(ASR_TIMEOUT_MS),
+      headers: {
+        authorization: `Bearer ${settings.apiKey}`,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: multipart,
+      timeoutMs: ASR_TIMEOUT_MS,
+      maxBytes: 2 * 1024 * 1024,
     });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) {
+    let data = null;
+    try { data = JSON.parse(res.body.toString('utf8')); } catch { /* 非 JSON 响应按无数据处理 */ }
+    if (res.status < 200 || res.status >= 300) {
       const message = String(data?.error?.message ?? `HTTP ${res.status}`).slice(0, 200);
       throw new Error(res.status === 401 ? 'DeepSeek 鉴权失败（检查 API Key）'
         : res.status === 402 ? 'DeepSeek 余额不足'

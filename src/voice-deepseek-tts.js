@@ -16,7 +16,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pruneAudioCache, writeAudioAtomic } from './voice-core.js';
+import { httpRequest, pruneAudioCache, writeAudioAtomic } from './voice-core.js';
 
 const ENDPOINT = 'https://api.deepseek.com/v1/tools/tts';
 // 服务端上限是 1 万个"计费字符"（汉字×2），按原文字符数留 1 万的安全余量即可，
@@ -68,11 +68,11 @@ export async function synthesizeDeepseekToFile({
   timeoutMs = 90000,
   cacheVersion = null,
   outDir,
-  fetchImpl = fetch,
+  requestImpl = httpRequest, // 测试可注入；生产走 node:https 直连（见 voice-core.httpRequest 注释）
 } = {}) {
   const say = String(text ?? '').trim().slice(0, MAX_TEXT);
   if (!say) throw new Error('要合成的内容是空的');
-  if (!apiKey) throw new Error('DeepSeek 语音还没配置：填一个 DeepSeek API Key，或留空复用联网搜索的 Key');
+  if (!apiKey) throw new Error('DeepSeek 语音还没配置：读不到 DeepSeek API Key（检查 DSH 凭据/联网搜索配置）');
   if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
   const voiceId = DEEPSEEK_VOICES.includes(String(voice).trim()) ? String(voice).trim() : DEEPSEEK_DEFAULT_VOICE;
   fs.mkdirSync(outDir, { recursive: true });
@@ -86,35 +86,34 @@ export async function synthesizeDeepseekToFile({
 
   let res;
   try {
-    res = await fetchImpl(ENDPOINT, {
+    res = await requestImpl({
+      url: ENDPOINT,
       method: 'POST',
       headers: {
         authorization: `Bearer ${String(apiKey)}`,
         'content-type': 'application/json',
+        accept: 'application/json, audio/wav',
       },
       body: JSON.stringify({ text: say, voice_id: voiceId, format: 'wav' }),
-      signal: AbortSignal.timeout(timeoutMs),
+      timeoutMs,
     });
   } catch (err) {
-    if (err?.name === 'TimeoutError') throw new Error(`DeepSeek 语音合成超时（>${Math.round(timeoutMs / 1000)}s）`);
-    throw new Error(`连不上 DeepSeek 语音：${String(err?.message ?? err).slice(0, 200)}`);
+    const message = String(err?.message ?? err);
+    const proxyHint = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|超时/.test(message) ? '（多为代理节点不稳，稍后重试通常可恢复）' : '';
+    throw new Error(`连不上 DeepSeek 语音：${message.slice(0, 200)}${proxyHint}`);
   }
+  if (res.truncated) throw new Error('DeepSeek 音频过大被中止，请缩短文本后重试');
 
   // 出错时返回的是 JSON（OpenAI 兼容错误体），音频正常时是 wav 流
-  const contentType = String(res.headers.get('content-type') ?? '');
-  if (!res.ok || /json/i.test(contentType)) {
-    const raw = await res.text().catch(() => '');
+  const contentType = String(res.headers?.['content-type'] ?? '');
+  if (res.status < 200 || res.status >= 300 || /json/i.test(contentType)) {
+    const raw = res.body.toString('utf8');
     let message = `HTTP ${res.status}`;
     try { message = String(JSON.parse(raw)?.error?.message ?? raw ?? message).slice(0, 200); } catch { /* 原样用状态码 */ }
     throw new Error(describeHttpError(res.status, message));
   }
 
-  let buf;
-  try {
-    buf = Buffer.from(await res.arrayBuffer());
-  } catch (err) {
-    throw new Error(`DeepSeek 音频传输中断，请重试：${String(err?.message ?? err).slice(0, 120)}`);
-  }
+  const buf = res.body;
   if (!looksLikeWholeWav(buf)) throw new Error('DeepSeek 返回的音频不完整（可能中途断开），请重试');
 
   writeAudioAtomic(file, buf);

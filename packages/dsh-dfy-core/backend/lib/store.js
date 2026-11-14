@@ -399,10 +399,16 @@ export function readUnified() {
   return {
     config,
     hasUserFile: Object.keys(user).length > 0,
-    // 用户文件里是否**明确写过** admin。决定「空值」是显式清空还是还没配置：
+    // 用户文件里是否**明确写过**某段。决定「空值」是显式清空还是还没配置：
     // readUnified() 会合并 DEFAULT_UNIFIED，合并结果里 admin 永远存在（默认空串），
     // 只看合并值会把升级后的旧字段（ownerQQ / owner.mid）永远当不存在。
     hasAdmin: isPlainObject(user.admin),
+    // 名单三键同理：QQ 页写在合体层，但内置桥只读 qq/config.json。
+    // 未写过时展示层要回落到 QQ 配置里的**实际生效值**，否则页面显示空白、
+    // 管理员还会被误报「不在私聊白名单里」（2026-11-14 全量体检）。
+    hasAllow: isPlainObject(user.allow),
+    hasDeny: isPlainObject(user.deny),
+    hasAllowAllWhenEmpty: Object.prototype.hasOwnProperty.call(user, 'allowAllWhenEmpty'),
   };
 }
 
@@ -632,6 +638,11 @@ export function readAll() {
     bili: bili.config,
   });
   const unifiedWithAdmin = { ...unified.config, admin: normalizeAdmin(admin) };
+  // 名单展示回落到 QQ 配置（内置桥真正执行的那一份）：用户没在合体层写过时，
+  // 页面要看到实际生效的名单，而不是空白 + 误报「管理员不在白名单」。
+  if (!unified.hasAllow) unifiedWithAdmin.allow = qq.config.allow ?? {};
+  if (!unified.hasDeny) unifiedWithAdmin.deny = qq.config.deny ?? {};
+  if (!unified.hasAllowAllWhenEmpty) unifiedWithAdmin.allowAllWhenEmpty = qq.config.allowAllWhenEmpty === true;
   return {
     qq: redactForUi(qq.config),
     bili: redactForUi(bili.config),

@@ -410,6 +410,9 @@ export function closurePromptBlock(assessment, { record = null, now = Date.now()
       lines.push(formatClosureRecord(record, now));
     }
   }
+  // 2026-11-14 复发：模型把这段判断/摘要当成台词发到聊天里（「这段已经收尾，主人没有再发新的」）。
+  // 明确标注这是内部参考，降低复述概率；出站还有 reply-cleanup 的整行兜底。
+  lines.push('（以上是给你自己看的内部判断，不是台词：不要把判断过程、上次收尾摘要、「已经收尾」这类话发给对方。）');
   return lines.join('\n');
 }
 

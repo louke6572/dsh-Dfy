@@ -42,6 +42,7 @@ import { prepareReply, capText, takeStickerTags, takeMarkdownImages, hasMarkdown
 import { writeJsonFileAtomic as writeJsonFileAtomicSync } from './atomic-write.mjs';
 import { createMemoryRecall } from './memory-recall.mjs';
 import { noteIncoming, recordReply } from './chat-corpus.js';
+import { readAsrSettings, transcribeQqVoice } from './voice-asr.js';
 import { recentCrossPlatformDigest } from './cross-platform-digest.mjs';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
@@ -169,6 +170,10 @@ const ROOT = path.resolve(__dirname, '..');
 const EMBEDDED_MODE = process.env.SURFCORE_EMBEDDED === '1';
 // 嵌入运行时句柄（仅嵌入模式使用）：停止/热重载由插件宿主调用。
 let embeddedRuntime = null;
+// 跨模块实例的单例句柄：插件热重载会重新 import 本文件，模块内变量各自一份，
+// 但 globalThis 是共享的。没有它，旧实例的 pumpMux 会和新实例并行消费同一条
+// 事件流 —— 同一轮回复被处理两遍、发两遍（2026-11-14 日志实测）。
+const BRIDGE_SINGLETON = Symbol.for('surfcore.qq.bridge.instance');
 // 二代会话状态的「立即落盘」钩子：由 main() 创建合并写器后注册。
 // 进程级退出钩子（installProcessGuards）与内嵌 stop() 都要把合并窗口里的脏数据刷掉，
 // 否则 300ms 合并期内正常退出会丢掉最后一批入站缓冲/唤醒计数。
@@ -1629,7 +1634,7 @@ function withTimeout(promise, ms, label) {
 }
 
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
+  const { resolveAtName, resolveReply, includeReply = true, resolveVoice = null } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
@@ -1652,7 +1657,18 @@ async function segmentsToText(segments, options = {}) {
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
       case 'image': out.push('[图片]'); break;
-      case 'record': out.push('[语音]'); break;
+      // 语音条：内置模式在这里转文字。以前只塞一个 "[语音]" 占位，
+      // 设置里的 ASR 开关在内置模式等于摆设（只有 AstrBot 插件桥会转写）。
+      case 'record': {
+        if (resolveVoice) {
+          try {
+            const spoken = String(await resolveVoice(d) ?? '').trim();
+            if (spoken) { out.push(`[语音] ${spoken}`); break; }
+          } catch { /* 转写失败回退占位；细节由 resolveVoice 记日志 */ }
+        }
+        out.push('[语音]');
+        break;
+      }
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply': {
@@ -1806,6 +1822,11 @@ async function main(options = {}) {
   // 嵌入模式不抢锁：锁文件是给独立进程/守护脚本用的，宿主进程由 DSH 生命周期保证唯一。
   if (!embed) acquireLock();
   let shuttingDown = false;
+  // 事件流的显式中断器：shuttingDown 只能拦住「下一轮重连」，叫不醒正卡在
+  // `for await` 里的旧实例。插件热重载时旧实例不 abort，就会和新实例并行消费
+  // 同一条事件流（2026-11-14 日志：同一秒两条 `事件流已结束`，155 帧 / 183 帧），
+  // 结果是同一轮回复被处理两遍、发两遍。
+  const muxAbort = new AbortController();
   const embeddedTimers = [];
   loadState();
 
@@ -3284,6 +3305,9 @@ async function main(options = {}) {
   // reserved2 模式下模型应通过 qq_send_message 发送；若整轮都没成功调用，
   // 私聊里至少降级把文本发出去，避免「她明明回了却什么都不发」。
   const turnSendToolState = new Map();
+  // reserved2「该发没发」的提醒节流：同一会话 10 分钟内只提醒一次，
+  // 防止模型连着几轮都不调发送工具时无限追加 turn（每轮都要花钱）。
+  const sendNudgeAt = new Map();
 
   /** 唤醒投递失败时给用户一条可见提示（仅限被 @/叫名字/私聊），10 分钟限频。 */
   function notifyWakeFailure(key, reason, error) {
@@ -14298,6 +14322,12 @@ async function main(options = {}) {
   }
 
   let groupPolicyCache = { key: '', value: normalizeGroupPolicy() };
+  // 「永久不再显示」的限流提示（limit-mutes.json）。此前只有写入、没有读取函数，
+  // POST /api/socialV2/limit-mute 一调就 ReferenceError（2026-11-14 全量体检）。
+  function readLimitMutes() {
+    const value = readJsonSafe(LIMIT_MUTE_FILE, { muted: {} });
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : { muted: {} };
+  }
   function readGroupPolicy() {
     try {
       const stat = fs.statSync(GROUP_POLICY_FILE);
@@ -15747,8 +15777,26 @@ async function main(options = {}) {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
-    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
+    // 语音条转写：同一条消息的 textContent / plainContent 会各扫一遍段列表，
+    // 这里按 file/url 记忆化，避免同一段语音被转写两次（ASR 按秒计费）。
+    const voiceTexts = new Map();
+    const resolveVoiceText = async (data) => {
+      const ref = String(data?.file || data?.url || '');
+      if (!ref) return '';
+      if (!voiceTexts.has(ref)) {
+        const settings = readAsrSettings(cfg);
+        if (!settings.enabled || !settings.apiKey) return '';
+        voiceTexts.set(ref, transcribeQqVoice({
+          recordFile: String(data?.file || ''),
+          recordUrl: String(data?.url || ''),
+          settings,
+          log,
+        }).then((r) => r?.text || '').catch(() => ''));
+      }
+      return voiceTexts.get(ref);
+    };
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, resolveVoice: resolveVoiceText });
+    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false, resolveVoice: resolveVoiceText });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
@@ -16660,7 +16708,7 @@ async function main(options = {}) {
       let framesThisStream = 0;
       try {
         log('连接 DSH 事件流…');
-        for await (const envelope of api.events.mux({})) {
+        for await (const envelope of api.events.mux({}, muxAbort.signal)) {
           framesThisStream += 1;
           const frame = envelope.payload;
           // 会话开场快照：只喂 token 账本。它含**历史** turn/end，绝不能让它们走
@@ -17014,24 +17062,38 @@ async function main(options = {}) {
                     }
                   }
                 } else if (currentMode === 'reserved2') {
-                  // 二代仿真模式：模型应通过 qq_send_message 发送，纯文本是内部输出、不自动转发。
-                  // 但如果整轮**一次发送工具都没成功调用**，而这是私聊里有人明确在叫她，
-                  // 就降级把文本直接发出去 —— 否则就是「她明明回了，QQ 却什么都没收到」。
-                  // 群聊不降级（避免把内部计划发进公开场合）；含内部标记的文本也不降级。
+                  // 二代仿真模式：模型应通过 qq_send_message 发送，纯文本是内部输出。
+                  //
+                  // 2026-11-14 结构性收口：**纯文本永不自动转发**。
+                  // 之前留了「私聊有人叫她就降级直发」的口子，靠黑名单判断像不像内部输出；
+                  // 措辞是无穷的，模型换个说法就漏一次（日志里 4 次降级直发全是内部旁白：
+                  // 「这段已经收尾」「空唤醒没有实际来信」）。现在改成：
+                  //   · 不转发原文；
+                  //   · 确实是用户在叫她（private/@/叫名字/拍一拍/管理员）、却没调发送工具时，
+                  //     用一条内部提醒让她自己调 qq_send_message 发出去，10 分钟最多一次；
+                  //   · 空唤醒/主动回合不提醒（避免白烧一轮 token）。
                   const toolState = turnSendToolState.get(frame.sessionId);
                   turnSendToolState.delete(frame.sessionId);
                   const st2 = getSocialV2State(key);
-                  const directWake = String(key).startsWith('private:') || isHardDirectWakeReason(st2.lastWakeReason);
-                  // 内部输出识别面放宽：模型不一定按【目的】模板写计划（「（内部）…」「## 计划」等），
-                  // 识别不到会把内部计划整段降级直发进聊天（2026-11-14 体检）。
-                  const looksInternal = /【(?:目的|需求|计划|思考|内部|判断)/.test(plain)
-                    || /^（内部/.test(plain)
-                    || /(?:^|\n)#{1,3}\s*(?:计划|内部|思考)/.test(plain)
-                    || /^\s*(?:plan|internal)\s*[:：]/im.test(plain);
-                  if (toolState && toolState.sent === false && directWake && !looksInternal && plain.trim().length <= 500) {
-                    log(`[reserved2] 本轮未调用发送工具，私聊降级直发 (${key})`);
-                    appendActivity(`${key} [reserved2] 未调用发送工具，已降级直发`);
-                    await sendToQQ(key, plain);
+                  const realUserWake = isHardDirectWakeReason(st2.lastWakeReason);
+                  const nudgedAt = sendNudgeAt.get(key) ?? 0;
+                  if (toolState && toolState.sent === false && realUserWake
+                    && plain.trim() && Date.now() - nudgedAt > 10 * 60_000) {
+                    sendNudgeAt.set(key, Date.now());
+                    log(`[reserved2] 本轮没调发送工具，提醒她自己发（不转发原文）(${key})`);
+                    appendActivity(`${key} [reserved2] 未调发送工具，已提醒（不直发）`);
+                    try {
+                      await api.sessions.prompt({
+                        sessionId: frame.sessionId,
+                        mode: 'queue',
+                        content: [{
+                          type: 'text',
+                          text: '（系统提醒，不是对方的发言）你上一轮想说的话还没有发出去。请调用 qq_send_message，把你想说的那句话原样发给对方；不要复述这条提醒，也不要解释。',
+                        }],
+                      });
+                    } catch (error) {
+                      log(`[reserved2] 发送提醒失败：${error?.message ?? error}`);
+                    }
                   } else {
                     log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
                     appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
@@ -17199,7 +17261,7 @@ async function main(options = {}) {
         // 就像「连上了、然后又连一次」，完全看不出 DSH 把流关了。
         log(`DSH 事件流已结束（本次收到 ${framesThisStream} 帧）`);
       } catch (error) {
-        log('事件流中断:', error?.message ?? error);
+        if (!shuttingDown) log('事件流中断:', error?.message ?? error);
       } finally {
         // WebSocket 正常关闭和异常中断都会走到这里；必须清掉旧 turn 相关状态，
         // 否则重连后旧 collector/标记残留会导致回复重复累加或误判。
@@ -17620,6 +17682,10 @@ async function main(options = {}) {
       stop: async () => {
         if (shuttingDown) return { ok: true, already: true, message: '内嵌桥接已停止' };
         shuttingDown = true;
+        // 先叫醒事件流：不 abort 的话它一直挂在 for-await 上，旧实例会继续消费
+        // 事件并与新实例抢着回复。
+        try { muxAbort.abort(); } catch {}
+        if (globalThis[BRIDGE_SINGLETON] === embeddedRuntime) delete globalThis[BRIDGE_SINGLETON];
         try { saveState(); } catch {}
         // 先落盘，再摘掉退出钩子：停止之后本实例不能再回写 —— 宿主可能已经让
         // 独立 bridge 接管，进程退出时用我们这份旧快照覆盖它更新的状态就是数据回退。
@@ -17649,6 +17715,8 @@ async function main(options = {}) {
         return { ok: true, stopped: true, message: '内嵌桥接已停止' };
       },
     };
+    // 登记到 globalThis：热重载后的新实例靠它找到并停掉这个旧实例。
+    globalThis[BRIDGE_SINGLETON] = embeddedRuntime;
   }
 
   await pumpMux();
@@ -17758,6 +17826,12 @@ export async function startEmbedded({ dshWebUrl = '' } = {}) {
     return { ok: false, error: '端口 3100 已被占用（已有独立 bridge 在运行）；请先停掉它再让 DSH 接管' };
   }
   if (dshWebUrl) process.env.DSH_WEB_URL = String(dshWebUrl);
+  // 热重载场景：旧模块实例可能还活着（它的 embeddedStarted 在新实例里看不到）。
+  // 先按 globalThis 上的登记停掉旧的，再启动新的，否则两条事件流并行消费。
+  const previousInstance = globalThis[BRIDGE_SINGLETON];
+  if (previousInstance && typeof previousInstance.stop === 'function') {
+    try { await previousInstance.stop(); } catch {}
+  }
   embeddedStarted = true;
   embeddedStartupError = '';
   main({ embed: true }).catch((error) => {

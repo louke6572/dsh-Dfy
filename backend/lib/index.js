@@ -1647,6 +1647,26 @@ export function apply(ctx) {
     body.qq = planned.qq;
     body.bili = planned.bili;
     body.unified = planned.unified;
+    // 名单 / 放行开关同 admin 一样以合体层为真相，但内置桥只读 qq/config.json
+    //（AstrBot 路径读合体层）。以前只镜像了 admin：页面改白/黑名单后内置桥永远看不到
+    //（2026-11-14 全量体检实测：合体层无 allow，qq/config.json 里才有效名单）。
+    // 只镜像用户**明确写过**的键，避免一次无关保存把 QQ 侧已有名单冲掉。
+    if (body.unified && typeof body.unified === 'object') {
+      const u = body.unified;
+      // 只同步「确实变了」的键：设置页保存时会把展示用名单一起带回来，
+      // 否则改任何无关设置都会多写一次 QQ 配置并提示重启桥接。
+      const cur = readQqConfig().config ?? {};
+      const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+      const mirror = {};
+      if (Object.prototype.hasOwnProperty.call(u, 'allow') && !same(u.allow, cur.allow)) mirror.allow = u.allow;
+      if (Object.prototype.hasOwnProperty.call(u, 'deny') && !same(u.deny, cur.deny)) mirror.deny = u.deny;
+      if (Object.prototype.hasOwnProperty.call(u, 'allowAllWhenEmpty') && u.allowAllWhenEmpty !== (cur.allowAllWhenEmpty === true)) {
+        mirror.allowAllWhenEmpty = u.allowAllWhenEmpty;
+      }
+      if (Object.keys(mirror).length) {
+        body.qq = { ...(body.qq && typeof body.qq === 'object' ? body.qq : {}), ...mirror };
+      }
+    }
     if (body.qq && typeof body.qq === 'object') {
       if (body.qq.allow && typeof body.qq.allow === 'object') {
         const ownerForAllow = planned.unified?.admin?.qq || readQqConfig().config?.ownerQQ || '';
@@ -5161,7 +5181,19 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
         const level = String(url.searchParams.get('level') ?? '').trim();
         const includeAcked = url.searchParams.get('includeAcked') !== '0';
-        json(res, 200, { ok: true, ...gateEvents.list({ limit, level, includeAcked }), gateEvents: true });
+        const snapshot = gateEvents.list({ limit, level, includeAcked });
+        // 「永久不再显示」：桥接侧 POST /api/socialV2/limit-mute 写入的限流 code，
+        // 在这里从事件流里过滤掉。以前只有写入没有读取，按钮点了等于没生效。
+        try {
+          const mutes = readJson(path.join(QQ_STATE_DIR, 'limit-mutes.json'), {}) ?? {};
+          const muted = new Set(Object.keys(mutes?.muted ?? {}));
+          if (muted.size) {
+            snapshot.events = (snapshot.events ?? []).filter(
+              (ev) => !(ev.gate === 'limit' && muted.has(String(ev.reason?.code ?? ''))),
+            );
+          }
+        } catch { /* 静音文件坏了不影响展示 */ }
+        json(res, 200, { ok: true, ...snapshot, gateEvents: true });
         return;
       }
       if (req.method === 'POST') {

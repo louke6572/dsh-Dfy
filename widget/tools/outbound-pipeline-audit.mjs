@@ -81,7 +81,10 @@ function truthy(value, label) {
   eq(humanizeReplyText('她发表情，我回了张吃饱了的鲸鱼娘，正好接投喂话题，收尾'), '', 'A5b 旁白整行被清掉');
   eq(humanizeReplyText('她回个「哈哈」，夜宵梗聊到自然收尾了'), '', 'A5b 「…聊到自然收尾了」被清掉');
   eq(humanizeReplyText('收尾了'), '', 'A5b 单说「收尾了」被清掉');
+  eq(humanizeReplyText('这段已经收尾，主人没有再发新的，自然结束'), '', 'A5b 收尾决策旁白被清掉');
+  eq(humanizeReplyText('已经收尾过了，这轮是空唤醒没有实际来信，不重复收尾也不硬回话 主人在桌宠卡片里说的一句话如果没有带实际内容，我就保持安静，等有新话题再醒'), '', 'A5b 空唤醒决策旁白被清掉');
   eq(humanizeReplyText('来了来了，还是你上道'), '来了来了，还是你上道', 'A5b 正常回复不被误伤');
+  eq(humanizeReplyText('那这段就收尾吧，我先去忙'), '那这段就收尾吧，我先去忙', 'A5b 正常说收尾不误伤');
   eq(humanizeReplyText('我回了趟老家，你呢'), '我回了趟老家，你呢', 'A5b 真实语义的「我回了」不被误伤');
 }
 
@@ -204,6 +207,23 @@ for (const { file, label } of PIPELINE_CONSUMERS) {
   src.includes('outbound-reply.mjs')
     ? ok(`B2 ${label} 走统一出站管道`)
     : fail(`B2 ${label} 没有 import outbound-reply.mjs（又会各自写一份清洗）`);
+}
+
+// B2b. 结构性不变式：reserved2 的内部独白不许自动转发；事件流必须可中断。
+// 这两条是「旁白反复复发 / 回复重复发」的根，不靠黑名单，靠结构断言。
+{
+  const src = read('src/bridge.js');
+  if (!src) {
+    fail('B2b 找不到 src/bridge.js');
+  } else {
+    const m = src.match(/currentMode === 'reserved2'\) \{[\s\S]*?\n\s*\} else \{/);
+    if (!m) fail('B2b 找不到 reserved2 分派块（结构变了，请更新断言）');
+    else if (/sendToQQ\(key,\s*plain/.test(m[0])) fail('B2b reserved2 又把纯文本降级直发了（内部独白会外泄）');
+    else ok('B2b reserved2 纯文本不自动转发');
+    /events\.mux\(\{\},\s*muxAbort\.signal\)/.test(src)
+      ? ok('B2b 事件流接了中断器（热重载不会双开）')
+      : fail('B2b 事件流没接中断器：热重载后旧实例会和新实例并行消费');
+  }
 }
 
 // B3. 不允许在出站模块里再手写 Markdown 图片正则（必须用共享的）

@@ -39,7 +39,7 @@ export function planClose({ st, now = Date.now(), sendFailed = false } = {}) {
       cooldownUntil: Number(closure.cooldownUntil) || 0,
       summary: String(closure.summary || ''),
       nextOpening: String(closure.nextOpening || ''),
-      hint: '这段已经收尾；有新消息/新话题再继续，不要重复收尾。',
+      hint: '（内部提示，不要复述给用户）这段已经收尾；有新消息/新话题再继续，不要重复收尾。',
     };
   }
   return { blocked: false };

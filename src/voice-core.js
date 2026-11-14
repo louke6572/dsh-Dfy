@@ -13,6 +13,7 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 /** 网关能直接吃进去的音频扩展名（SnowLuma 会自动转 SILK）。 */
 export const AUDIO_EXTS = [
@@ -526,16 +527,13 @@ export function pruneAudioCache(dir, {
 }
 
 /**
- * 音频文件原子落盘：唯一临时名（并发同句合成时固定 `${pid}.tmp` 会互相覆盖 /
- * 先 rename 的把后 rename 的挤成 ENOENT，2026-11-14 体检），失败清理半截文件再抛。
+ * 音频文件原子落盘（薄封装）：实现统一在 atomic-write.js，这里只保留语音模块的
+ * 错误话术与 mode。并发同句合成时由共享实现提供唯一临时名，不会互相覆盖。
  */
 export function writeAudioAtomic(file, data) {
-  const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2, 10)}.tmp`;
   try {
-    fs.writeFileSync(tmp, data);
-    fs.renameSync(tmp, file);
+    writeFileAtomic(file, data, { mode: 0o600 });
   } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
     throw new Error(`写入语音缓存失败：${error?.message ?? error}`);
   }
 }

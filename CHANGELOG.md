@@ -199,6 +199,14 @@
   裸 base64、网关本机文件路径三种返回；
   ② AstrBot 插件还停在 v1.0.0（没有语音转发），现升级到 v1.1.0；
   ③ 本机 `socialV2.voice.asr` 一直是关闭状态，现已在本地配置开启（原文件备份 `config.json.bak-before-asr`）。
+- **内置桥在 DSH 里根本起不来（真机复现）**（2026-11-15）：
+  `consolePortInUse()` 用 `netstat -ano` 判断 3100 是否被占用，但连接多的机器上
+  输出会超过 `execFileSync` 默认 1MB 缓冲 → 抛 ENOBUFS → catch 一律当成「已有桥接在跑」，
+  于是 DSH 启动时永远跳过内嵌桥接。已把缓冲提到 16MB、超时 15s，探测失败时回落到
+  锁文件 PID 判断；重启 DSH 后实测「桥接已并入 DSH 进程启动」，SnowLuma 已连接。
+- **诊断误报「SnowLuma token 不匹配」**（2026-11-15）：
+  以前只要 3000/3001 在监听、桥接没连上就报 token 有问题；桥接没启动时本来就不会连。
+  现在按配置里的 accessToken 真实请求一次 `get_login_info` 再下结论，实测诊断从 warn 转 ok。
 - **「限流提示·永久不再显示」一点就 500**（2026-11-14 全量体检）：
   `POST /api/socialV2/limit-mute` 调用的 `readLimitMutes()` 全仓库没有定义（ReferenceError），
   且写入的 `limit-mutes.json` 没有任何读取方。现已补上读取函数，并让设置页

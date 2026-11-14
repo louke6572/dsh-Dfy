@@ -2857,15 +2857,42 @@ ${body}`;
 
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
+  //
+  // 2026-11-15 真机修正：以前只要 3000/3001 在监听、桥接没连上，就报「token 不匹配」。
+  // 但桥接没启动时本来就不会连 —— 实测 token 完全正确也会被误报。这里直接按配置里的
+  // accessToken 打一次 get_login_info，用真实响应判断，而不是靠“端口开着”猜。
+  async function probeOneBotLogin(snow = {}) {
+    const httpUrl = String(snow.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const token = String(snow.accessToken || '').trim();
+    try {
+      const res = await fetch(`${httpUrl}/get_login_info`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: '{}',
+        signal: AbortSignal.timeout(4000),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.status === 'ok') {
+        return { ok: true, nickname: String(data?.data?.nickname ?? ''), userId: String(data?.data?.user_id ?? '') };
+      }
+      return { ok: false, status: res.status, wording: String(data?.wording || data?.message || '') };
+    } catch (error) {
+      return { ok: false, status: 0, wording: String(error?.message ?? error) };
+    }
+  }
+
   async function diagnoseSnowLuma(bridgeSnow = {}) {
     if (bridgeSnow.connected === true) return { state: 'ok', hint: '' };
     const webui = snowLumaWebui();
     const onebot = (await portOpen(3000)) || (await portOpen(3001));
     const webuiUp = await portOpen(webui.port);
     if (onebot) {
+      const probe = await probeOneBotLogin(bridgeSnow);
+      if (probe.ok) return { state: 'ok', hint: '' };
+      const detail = probe.status ? `HTTP ${probe.status}${probe.wording ? ` ${probe.wording}` : ''}` : probe.wording;
       return {
         state: 'onebot-rejected',
-        hint: 'OneBot 端口在监听但桥接连不上：多半是 accessToken 不匹配（对齐 config.json 的 snowluma.accessToken），或 httpUrl 指到了 WebSocket 端口',
+        hint: `OneBot 端口在监听但鉴权失败${detail ? `（${detail}）` : ''}：对齐 config.json 的 snowluma.accessToken，或确认 httpUrl 不是 WebSocket 端口`,
       };
     }
     if (webuiUp) {

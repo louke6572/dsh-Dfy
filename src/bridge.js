@@ -1443,15 +1443,32 @@ function consolePortInUse() {
   try {
     const cfg = readJsonSafe(CONFIG_FILE, {});
     const port = Number(cfg?.consolePort) || 3100;
+    // maxBuffer 必须给足：连接多的机器上 `netstat -ano` 输出能超过默认 1MB，
+    // spawnSync 直接抛 ENOBUFS → 旧代码的 catch 一律当「端口已占用」，
+    // 于是 DSH 里内置桥永远起不来（2026-11-15 真机实测，本机 netstat 输出 >1MB）。
+    const opts = { encoding: 'utf8', timeout: 15000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] };
     if (process.platform === 'win32') {
-      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], opts);
       return new RegExp(`[:.]${port}\\s+\\S+\\s+LISTENING`, 'i').test(out);
     }
-    const out = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'], opts);
     return new RegExp(`[:.]${port}\\s`).test(out);
   } catch {
-    // 探测不出来时保守认为「有人在跑」，宁可让用户手动删锁，也不要冒双实例的风险。
+    // 探测失败时不再无条件当成「有人在跑」：那会让桥接永久起不来。
+    // 回落到锁文件里的 PID 是否存活（可控且能区分真正残留的锁）。
+    return lockPidAlive();
+  }
+}
+
+/** 锁文件里记录的 PID 是否仍存活（EPERM 视为存活：受保护进程占着这个号）。 */
+function lockPidAlive() {
+  try {
+    const pid = Number(String(fs.readFileSync(LOCK_FILE, 'utf8')).trim());
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    process.kill(pid, 0);
     return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
   }
 }
 

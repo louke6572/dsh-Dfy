@@ -70,6 +70,11 @@ const BIDI_DEFAULTS = {
 
 export const DEFAULT_UNIFIED = {
   version: 1,
+  // 只桌宠模式（2026-11）：打开后只保留桌宠，QQ / B站 / 贴吧 / 抖音 / 记忆同步等
+  // 集成服务一律不自动启动，后台定时器全部跳过（重新关闭后自动恢复，不用重启）。
+  // 角色 / 人设 / 语音 / 记忆卡仍可用（桌宠自己要用）；模块开关只藏设置页，
+  // petOnly 才是「这一份安装只要桌宠」的总闸。
+  petOnly: false,
   qqbotRoot: QQBOT_ROOT,
   bridge: {
     autoStart: false,
@@ -765,6 +770,9 @@ function normalizeUnified(config) {
   next.modules = Object.fromEntries(
     MODULE_IDS.map((id) => [id, boolOr(modulesRaw[id], true)]),
   );
+  // 只桌宠模式：只收布尔（缺省 false）。它不改 modules 的偏好，
+  // 关掉后各平台按原来的 modules / platforms.start 设置恢复。
+  next.petOnly = boolOr(next.petOnly, false);
   return next;
 }
 

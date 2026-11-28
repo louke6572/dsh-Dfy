@@ -10,6 +10,10 @@
 # 只装挂件/桌宠，不接 QQ（不装 SnowLuma）：
 #   $env:DSHDFY_SKIP_SNOWLUMA = '1'; ... | iex
 #
+# 只桌宠模式（跳过 QQ 侧可选依赖 / MCP，并默认打开「只桌宠模式」）：
+#   $env:DSHDFY_PET_ONLY = '1'; ... | iex
+#   本地执行也可以直接：powershell -File scripts\bootstrap.ps1 -PetOnly
+#
 # 只检查环境、不安装（⚠️ 管道进 iex 时无法传 -Check；用环境变量）：
 #   $env:DSHDFY_CHECK = '1'; ... | iex
 #
@@ -17,11 +21,16 @@
 #   $env:DSHDFY_DIR = 'D:\dsh-Dfy'; ... | iex
 
 param(
-  [switch]$Check
+  [switch]$Check,
+  [switch]$PetOnly
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# 只桌宠：跳过 optionalDependencies（@snowluma/sdk、douyin-im）与 QQ 侧 MCP，
+# 安装完成后由 setup-dsh 写入 petOnly=true。
+$petOnlyMode = $PetOnly -or ($env:DSHDFY_PET_ONLY -eq '1')
 
 # 失败必须让**退出码**也是失败：AGENT.md / README 把「退出码 0」当作安装成功的判据，
 # 而管道进 iex 的脚本里 `return` 只结束脚本块、退出码仍是 0（2026-11 审查修复）。
@@ -120,10 +129,12 @@ Push-Location $Dir
 try {
   $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
   if ($npmCmd) {
-    & npm install --no-audit --no-fund
+    $npmArgs = @('install', '--no-audit', '--no-fund')
+    if ($petOnlyMode) { $npmArgs += '--omit=optional' }
+    & npm @npmArgs
     if ($LASTEXITCODE -ne 0) {
       Bad 'npm install 失败，改用国内镜像重试'
-      & npm install --no-audit --no-fund --registry https://registry.npmmirror.com
+      & npm @($npmArgs + @('--registry', 'https://registry.npmmirror.com'))
     }
   } elseif (Test-Path $bundledPnpm) {
     Bad '没有 npm，改用 DSH 自带的 pnpm'
@@ -139,7 +150,9 @@ try {
 Step 4 '写进 DSH（profile / 预设 / MCP）'
 Push-Location $Dir
 try {
-  & $nodeExe (Join-Path $Dir 'scripts\setup-dsh.mjs')
+  $setupArgs = @((Join-Path $Dir 'scripts\setup-dsh.mjs'))
+  if ($petOnlyMode) { $setupArgs += '--pet-only' }
+  & $nodeExe @setupArgs
   if ($LASTEXITCODE -ne 0) {
     Fail "注册失败。可手动执行：cd `"$Dir`"; node scripts\setup-dsh.mjs"
   }
@@ -150,6 +163,8 @@ try {
 Step 5 '检测 SnowLuma（QQ 运行时）'
 if ($env:DSHDFY_SKIP_SNOWLUMA -eq '1') {
   Bad '已跳过（DSHDFY_SKIP_SNOWLUMA=1）：只装挂件/桌宠'
+} elseif ($petOnlyMode) {
+  Bad '只桌宠模式：跳过 SnowLuma（不需要 QQ）'
 } else {
   Push-Location $Dir
   try {
@@ -165,10 +180,16 @@ if ($env:DSHDFY_SKIP_SNOWLUMA -eq '1') {
 # ── 6. 下一步 ──────────────────────────────────────────────────────────────
 Step 6 '完成'
 Say ''
-Say '  1) 完全退出 DSH（托盘图标也要退出），再打开'
-Say '  2) 设置 → dsh-Dfy → 一键开始；第一次用 QQ 时在 SnowLuma 窗口扫码登录'
-Say '  3) 接 QQ 但还没 SnowLuma：自行准备安装包，设置页「维护 → SnowLuma → 手动选择」指定'
-Say '     （仓库已转私有，插件不自动下载；不影响挂件 / 桌宠）'
+if ($petOnlyMode) {
+  Say '  1) 完全退出 DSH（托盘图标也要退出），再打开'
+  Say '  2) 桌宠直接可用：QQ / B站 / 贴吧 / 抖音不会启动，也没有 QQ 侧 MCP'
+  Say '  3) 想恢复集成：重跑安装（不带 -PetOnly / DSHDFY_PET_ONLY），再到设置里关闭「只桌宠模式」'
+} else {
+  Say '  1) 完全退出 DSH（托盘图标也要退出），再打开'
+  Say '  2) 设置 → dsh-Dfy → 一键开始；第一次用 QQ 时在 SnowLuma 窗口扫码登录'
+  Say '  3) 接 QQ 但还没 SnowLuma：自行准备安装包，设置页「维护 → SnowLuma → 手动选择」指定'
+  Say '     （仓库已转私有，插件不自动下载；不影响挂件 / 桌宠）'
+}
 Say ''
 Say "  安装目录：$Dir"
 Say '  出问题：设置 → dsh-Dfy → 诊断 → 重新体检，把标 ✗ 的那一项发给我。'

@@ -11,6 +11,9 @@ export function createModuleRoutes(deps) {
   const {
     capabilityRegistry, moduleList, readUnified, saveUnified,
     readJsonBody, json, douyinStop, stopBridge, pluginLog,
+    // 只桌宠模式：新依赖都做成可选，旧测试/独立复用时缺了也不至于整页 500。
+    isPetOnly = (config) => config?.petOnly === true,
+    stopSchedulerNow, startSchedulerNow, douyinImStop, astrbotStop,
   } = deps || {};
 
   const required = {
@@ -63,7 +66,8 @@ export function createModuleRoutes(deps) {
   async function handleModules(req, res) {
     const method = String(req.method || 'GET').toUpperCase();
     if (method === 'GET') {
-      json(res, 200, { ok: true, modules: moduleList(readUnified().config) });
+      const config = readUnified().config;
+      json(res, 200, { ok: true, modules: moduleList(config), petOnly: isPetOnly(config) });
       return;
     }
     if (method !== 'POST') {
@@ -71,6 +75,28 @@ export function createModuleRoutes(deps) {
       return;
     }
     const body = await readJsonBody(req);
+
+    // ── 只桌宠模式总闸 ───────────────────────────────────────────────────
+    // 打开：立刻停掉 QQ 桥、抖音（浏览器/私信）、AstrBot 与 B站 生物钟；
+    // 后台定时器各自在 tick 时读配置，所以不用重启，也不会再自动拉起。
+    // 关闭：恢复 B站 生物钟；QQ 桥交给 2 分钟自愈轮询按原启动偏好拉起。
+    if (typeof body.petOnly === 'boolean') {
+      saveUnified({ petOnly: body.petOnly });
+      if (body.petOnly) {
+        try { await stopBridge?.(); } catch (error) { pluginLog('[petOnly] 停 QQ 桥失败：', error?.message ?? error); }
+        try { await douyinStop?.(); } catch (error) { pluginLog('[petOnly] 停抖音失败：', error?.message ?? error); }
+        try { await douyinImStop?.(); } catch (error) { pluginLog('[petOnly] 停抖音私信失败：', error?.message ?? error); }
+        try { astrbotStop?.(); } catch (error) { pluginLog('[petOnly] 停 AstrBot 失败：', error?.message ?? error); }
+        try { stopSchedulerNow?.(); } catch (error) { pluginLog('[petOnly] 停生物钟失败：', error?.message ?? error); }
+      } else {
+        try { startSchedulerNow?.(); } catch (error) { pluginLog('[petOnly] 恢复生物钟失败：', error?.message ?? error); }
+      }
+      const config = readUnified().config;
+      pluginLog(`[petOnly] ${body.petOnly ? '已开启（只桌宠）' : '已关闭（恢复集成）'}`);
+      json(res, 200, { ok: true, modules: moduleList(config), petOnly: isPetOnly(config) });
+      return;
+    }
+
     const id = String(body.id ?? '').trim();
     const enabled = body.enabled === true;
     if (!moduleList({}).some((item) => item.id === id)) {
@@ -88,7 +114,8 @@ export function createModuleRoutes(deps) {
       try { await stopBridge(); } catch (error) { pluginLog('[module] 停 QQ 桥失败：', error?.message ?? error); }
     }
     pluginLog(`[module] ${id} → ${enabled ? '启用' : '停用'}`);
-    json(res, 200, { ok: true, modules: moduleList(readUnified().config) });
+    const config = readUnified().config;
+    json(res, 200, { ok: true, modules: moduleList(config), petOnly: isPetOnly(config) });
   }
 
   return { handleCapabilities, handleModules };

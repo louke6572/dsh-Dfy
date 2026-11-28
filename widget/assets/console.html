@@ -437,6 +437,21 @@ main>div.dshwv-body>:not([hidden]){flex:0 0 auto}
 <button class="w-full py-1 px-2 rounded-lg bg-white border border-slate-200/70 hover:border-slate-300 text-[9.5px] font-semibold text-slate-700 shadow-tactile-card active:scale-[0.98] transition-all" id="con-sleep-btn" title="让桌宠睡一会儿：入睡 → 循环，睡着时被戳只回一句拒绝台词；再点一次叫醒" type="button">让桌宠睡觉</button>
 </div>
 </section>
+<!-- 只桌宠模式：关掉 QQ / B站 / 贴吧 / 抖音等集成服务，只留桌宠（立即生效，不用重启） -->
+<section class="p-2 rounded-xl bg-slate-50/60 border border-slate-200/70 shadow-tactile-card space-y-1.5" id="petonly-card" style="order:5">
+<div class="flex items-center justify-between space-x-2">
+<div class="min-w-0">
+<div class="text-[10px] font-bold text-slate-800 tracking-tight">只桌宠模式</div>
+<div class="text-[8.5px] text-slate-500 leading-snug mt-0.5" id="con-petonly-hint">关闭 QQ / B站 / 贴吧 / 抖音与记忆同步等后台任务</div>
+</div>
+<label class="py-1 px-2 rounded-lg bg-white border border-slate-200/70 flex items-center justify-between cursor-pointer hover:border-slate-300 transition-all shadow-tactile-card group active:scale-[0.98] flex-shrink-0" id="con-cell-petonly" title="打开后不自动启动任何平台服务，对应接口关闭；QQ 侧 MCP 条目需安装时用 setup-dsh --pet-only 跳过；关掉即恢复">
+<span class="text-[9.5px] font-medium text-slate-700 leading-none truncate mr-1.5" id="con-petonly-label">已关闭</span>
+<div class="w-5 h-3 bg-slate-300 rounded-full relative p-0.5 flex items-center shadow-inner flex-shrink-0" id="con-petonly-sw">
+<div class="w-2 h-2 bg-white rounded-full shadow-switch-thumb"></div>
+</div>
+</label>
+</div>
+</section>
 <!-- 2. 动作与待机（仅桌宠） -->
 <section class="p-2 rounded-xl bg-slate-50/60 border border-slate-200/70 shadow-tactile-card space-y-1.5 transition-all duration-200" id="action-standby-card" style="order:4">
 <button class="w-full flex items-center justify-between cursor-pointer text-left focus:outline-none" id="action-accordion-header" type="button">

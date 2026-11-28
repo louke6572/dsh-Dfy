@@ -152,7 +152,16 @@ section('4. 包内 import 可解析性');
     }
   };
   walk(installDir);
-  const deps = new Set(Object.keys(pkg.dependencies ?? {}));
+  // optionalDependencies 也要算「声明过」：QQ 集成（@snowluma/sdk / douyin-im）是可选的，
+  // 只桌宠模式允许不装；代码侧已全部改成动态 import + 失败兜底，不是裸静态依赖。
+  const deps = new Set([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.optionalDependencies ?? {}),
+  ]);
+  // 可选依赖（QQ 集成）只能在运行时动态 import：静态 import 会让「没装可选依赖」
+  // 在插件加载阶段直接 ERR_MODULE_NOT_FOUND，桌宠也起不来。
+  // scripts/ 下是 QQ 诊断脚本，允许静态 import（不会被插件进程加载）。
+  const optionalDeps = new Set(Object.keys(pkg.optionalDependencies ?? {}));
   const selfName = String(pkg.name ?? '');
   const relCandidates = (base, spec) => {
     const resolved = path.resolve(base, spec);
@@ -186,6 +195,12 @@ section('4. 包内 import 可解析性');
         continue;
       }
       const scoped = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      if (optionalDeps.has(scoped) || optionalDeps.has(spec)) {
+        const dynamic = /import\s*\(\s*['"][^'"]*['"]$/.test(m[0]);
+        if (!dynamic && !rel.startsWith('scripts/')) {
+          fail(`${rel}：可选依赖「${spec}」必须用动态 import —— 未安装时静态 import 会让插件加载直接失败`);
+        }
+      }
       if (deps.has(scoped) || deps.has(spec)) continue;
       if (scoped === selfName || spec === selfName) continue; // 自引用（Node exports self-name）
       if (HOST_PROVIDED_ALLOW.has(scoped)) continue; // 宿主自带、运行时从宿主解析

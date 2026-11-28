@@ -133,7 +133,7 @@ const SYSTEM_PROMPT = [
   '- 不要出现“视频中”“该帖子”“作者表示”这类转述腔，用她自己的口语。',
 ].join('\n');
 
-export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } = {}) {
+export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null, shouldRun = () => true } = {}) {
   let timer = null;
   let initial = null;
   let running = false;
@@ -501,6 +501,8 @@ export function createLearningLoop({ ctx, log = () => {}, tokenBudget = null } =
   function start() {
     if (timer || initial) return;
     const tick = () => {
+      // 只桌宠模式等场景跳过本轮（定时器保留，条件恢复后下一轮继续）。
+      if (!shouldRun()) return;
       const config = learningConfig();
       if (!config.enabled) return;
       void run().catch(() => {});

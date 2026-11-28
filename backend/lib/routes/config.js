@@ -22,6 +22,8 @@ export function createConfigRoutes(deps) {
     invalidateScheduler, retireScheduler, resetSchedulerIdle, startSchedulerNow,
     stopBridge, startBridge, restartBridge, currentDshUrl,
     readJsonBody, json,
+    // 只桌宠模式：保存配置时的「顺带启动」一律跳过（默认 false 便于旧测试独立复用）。
+    petOnlyOn = () => false,
   } = deps || {};
 
   const required = {
@@ -163,7 +165,8 @@ export function createConfigRoutes(deps) {
       // 抖音的时段/额度投影到网页端账本；失败只提示，不影响其它设置落盘。
       try { douyinSyncPolicy(); } catch (error) { result.warnings.push(`抖音时段同步失败：${String(error?.message ?? error).slice(0, 120)}`); }
       // 群聊/私信开关变化后立即生效（关掉会停，开起来会在下一轮恢复）。
-      try { void douyinChatResume(); } catch {}
+      // 只桌宠模式不恢复任何抖音连接。
+      if (!petOnlyOn()) { try { void douyinChatResume(); } catch {} }
       startSyncTimer();
       // 改了记忆卡容量/注入上限后立刻重渲染，避免「设置保存了但提示词还是旧的」。
       try {
@@ -172,7 +175,7 @@ export function createConfigRoutes(deps) {
       } catch (error) {
         result.warnings.push(`记忆卡重渲染失败：${error?.message ?? error}`);
       }
-      if (readUnified().config.memory?.qqToBili?.enabled === true) {
+      if (!petOnlyOn() && readUnified().config.memory?.qqToBili?.enabled === true) {
         try { result.qqMemory = syncQqToBili(); } catch (error) { result.warnings.push(`QQ→B站 同步失败：${error?.message ?? error}`); }
       }
     }
@@ -201,10 +204,14 @@ export function createConfigRoutes(deps) {
         result.scheduler = resetSchedulerIdle('disabled');
         result.warnings.push('B站 启动开关已关闭：生物钟已停止。');
       } else if (afterPlatformStart.bili && !beforePlatformStart.bili) {
-        result.scheduler = startSchedulerNow();
-        result.warnings.push(result.scheduler.running
-          ? 'B站 启动开关已打开：生物钟已启动。'
-          : 'B站 启动开关已打开，但生物钟启动失败（看插件日志）。');
+        if (petOnlyOn()) {
+          result.warnings.push('只桌宠模式已开启：已跳过启动 B站 生物钟。');
+        } else {
+          result.scheduler = startSchedulerNow();
+          result.warnings.push(result.scheduler.running
+            ? 'B站 启动开关已打开：生物钟已启动。'
+            : 'B站 启动开关已打开，但生物钟启动失败（看插件日志）。');
+        }
       }
       if (!afterPlatformStart.qq && beforePlatformStart.qq) {
         const stopped = await stopBridge();
@@ -214,11 +221,15 @@ export function createConfigRoutes(deps) {
           ? 'QQ 启动开关已关闭：QQ 桥接已停止。'
           : `QQ 启动开关已关闭，但桥接没停下来：${stopped.error ?? stopped.message ?? '未知'}`);
       } else if (afterPlatformStart.qq && !beforePlatformStart.qq && body.restartBridge !== true) {
-        const started = await startBridge({ dshWebUrl: currentDshUrl() });
-        result.bridgeStart = started;
-        result.warnings.push(started.ok
-          ? 'QQ 启动开关已打开：QQ 桥接已启动。'
-          : `QQ 启动开关已打开，但桥接启动失败：${started.error ?? started.message ?? '未知'}`);
+        if (petOnlyOn()) {
+          result.warnings.push('只桌宠模式已开启：已跳过启动 QQ 桥接。');
+        } else {
+          const started = await startBridge({ dshWebUrl: currentDshUrl() });
+          result.bridgeStart = started;
+          result.warnings.push(started.ok
+            ? 'QQ 启动开关已打开：QQ 桥接已启动。'
+            : `QQ 启动开关已打开，但桥接启动失败：${started.error ?? started.message ?? '未知'}`);
+        }
       }
     }
     if (body.restartBridge === true) {

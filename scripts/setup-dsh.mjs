@@ -11,7 +11,11 @@
 //      （surfcore = QQ 设置 + B站养鱼 + 两个 chat preset，全部在一个 bundle 里）
 //
 // 用法：
-//   node scripts/setup-dsh.mjs [profile]
+//   node scripts/setup-dsh.mjs [profile] [--pet-only]
+//
+//   --pet-only  只桌宠模式：不写入任何 MCP 条目，并把 unified.petOnly 置为 true，
+//               安装完成后只有桌宠，QQ/B站/贴吧/抖音与记忆同步都不会自动启动。
+//               恢复集成：去掉该参数重跑一次（MCP 条目会加回来），再到设置里关掉开关。
 //
 // 默认 profile 为 web；可用环境变量 DSH_HOME 指定 DSH 根目录。
 import fs from 'node:fs';
@@ -28,7 +32,9 @@ const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
-let PROFILE = process.argv[2] || '';
+const RAW_ARGS = process.argv.slice(2);
+const PET_ONLY = RAW_ARGS.includes('--pet-only');
+let PROFILE = RAW_ARGS.find((arg) => !arg.startsWith('-')) || '';
 if (!PROFILE) {
   try {
     const { detectProfile } = await import('./detect-profile.mjs');
@@ -139,7 +145,17 @@ function yamlSingleQuote(s) {
 // 由桥接托管的 MCP 条目 id：脚本对这三个 id 拥有所有权，可安全地按 id 增删。
 const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe'];
 
-function mcpEntries() {
+function mcpEntries(petOnly = PET_ONLY) {
+  // 只桌宠模式：QQ 侧 MCP server 一个都不写（mcp-snowluma / mcp-snowluma-host /
+  // mcp-web-search-safe 都是给 QQ/B站 集成用的）。保留同样的 BEGIN/END 标记，
+  // 下次不带 --pet-only 重跑时按同一段整体替换回来。
+  if (petOnly) {
+    let out = '# === qq-bridge MCP BEGIN ===\n';
+    out += '# 只桌宠模式：未写入 mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe。\n';
+    out += `# 需要恢复时重跑（不带 --pet-only）：node scripts/setup-dsh.mjs ${PROFILE}\n`;
+    out += '# === qq-bridge MCP END ===\n';
+    return out;
+  }
   const node = process.execPath;
   const servers = {
     'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
@@ -214,7 +230,9 @@ function patchCordis({ patchFile, original, text, removed }) {
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 ${MANAGED_MCP_IDS.length} 条）`);
+  log(PET_ONLY
+    ? `cordis.patch.yml: 只桌宠模式，已清理旧 MCP 条目 ${removed} 条，未写入任何 MCP`
+    : `cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 ${MANAGED_MCP_IDS.length} 条）`);
 }
 
 /**
@@ -435,6 +453,53 @@ function autoInstallProfileBundles() {
   }
 }
 
+/**
+ * --pet-only：把合体层的 petOnly 总闸预先打开。
+ *
+ * 只删 MCP 不够：插件启动后仍会按 platforms.start 拉起 QQ / B站。
+ * 这里直接读改写 unified 配置（保留用户其它设置），让"装完就只是桌宠"。
+ * 解析失败时不动原文件，只提示到设置里手动开（宁可不写，也不能写坏配置）。
+ */
+function ensurePetOnlyConfig() {
+  const file = path.join(DSH_HOME, 'surfcore', 'config.json');
+  if (!PET_ONLY) {
+    // 不带 --pet-only 时只提示、不改用户已有的选择：
+    // 免得更新一次插件就把「只桌宠模式」悄悄关掉，平台服务全部复活。
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (saved?.petOnly === true) {
+        log('注意：当前配置仍是「只桌宠模式」（petOnly=true）。要恢复 QQ / B站，请到设置里关闭该开关。');
+      }
+    } catch {}
+    return;
+  }
+  let current = {};
+  if (fs.existsSync(file)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = parsed;
+    } catch (error) {
+      log(`⚠️ 读不了 ${file}（${error?.message ?? error}），跳过 petOnly 预置；请到设置里手动开启只桌宠模式`);
+      return;
+    }
+  }
+  if (current.petOnly === true) {
+    log('只桌宠模式：配置里已经是开启状态');
+    return;
+  }
+  current.petOnly = true;
+  ensureDir(path.dirname(file));
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+    fs.renameSync(temporary, file);
+    log(`只桌宠模式：已写入 ${file}（petOnly=true）`);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    log(`⚠️ 写 ${file} 失败（${error?.message ?? error}），请到设置里手动开启只桌宠模式`);
+  }
+}
+
 // Validate the existing YAML before changing any presets or configuration.
 const cordisPatch = prepareCordisPatch();
 regeneratePresetPatches();
@@ -445,7 +510,15 @@ patchProfilePackage(links);
 reportLegacyPresetDir();
 ensureRepoConfig();
 ensureLocalModeFile();
+ensurePetOnlyConfig();
 autoInstallProfileBundles();
-log('Done. 下一步：完全退出 DSH（含托盘）再打开 → 设置 → dsh-Dfy → 一键开始。');
-log('   · 一键开始会自动识别并拉起 SnowLuma、写入账号与 token、启动 QQ 桥接和 B站。');
-log('   · SnowLuma 仓库已转私有，需你自行准备安装包；装好后在设置页「维护 → SnowLuma → 手动选择」指定目录，再扫码登录 QQ。');
+if (PET_ONLY) {
+  log('Done（只桌宠模式）。下一步：完全退出 DSH（含托盘）再打开即可，桌宠直接可用。');
+  log('   · 未安装任何 QQ 侧 MCP；QQ / B站 / 贴吧 / 抖音与记忆同步都不会自动启动。');
+  log(`   · 想恢复集成：重跑 node scripts/setup-dsh.mjs ${PROFILE}（不带 --pet-only），再到设置里关闭「只桌宠模式」。`);
+} else {
+  log('Done. 下一步：完全退出 DSH（含托盘）再打开 → 设置 → dsh-Dfy → 一键开始。');
+  log('   · 一键开始会自动识别并拉起 SnowLuma、写入账号与 token、启动 QQ 桥接和 B站。');
+  log('   · SnowLuma 仓库已转私有，需你自行准备安装包；装好后在设置页「维护 → SnowLuma → 手动选择」指定目录，再扫码登录 QQ。');
+  log('   · 只要桌宠：重跑时加 --pet-only，或在设置 → 维护 → 模块与能力 打开「只桌宠模式」。');
+}

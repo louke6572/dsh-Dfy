@@ -3334,6 +3334,65 @@ function conSetSw(sw, on) {
     th.style.transform = on ? ('translateX(' + shift + 'px)') : 'translateX(0)'
   }
 }
+// ===== 只桌宠模式（控制台总开关） =====
+// 状态存在 dsh-Dfy 后端的 unified.petOnly；打开后 QQ/B站/贴吧/抖音/语音等
+// 集成服务不再自动启动、后台定时器跳过、对应接口返回 410（关掉即恢复）。
+var conPetOnly = false
+var conPetOnlyLoaded = false
+var conPetOnlyBusy = false
+function conPetOnlyApply() {
+  var ex = conPillRefs.extra
+  if (!ex) return
+  if (ex.petonlySw) conSetSw(ex.petonlySw, !!conPetOnly)
+  if (ex.petonlyLabel) ex.petonlyLabel.textContent = conPetOnly ? '已开启' : '已关闭'
+  if (ex.petonlyHint) {
+    ex.petonlyHint.textContent = conPetOnly
+      ? '集成服务已停：QQ / B站 / 贴吧 / 抖音与记忆同步的后台任务都不会再跑'
+      : '关闭 QQ / B站 / 贴吧 / 抖音与记忆同步等后台任务'
+  }
+}
+function conPetOnlyLoad() {
+  if (conPetOnlyLoaded || conPetOnlyBusy) return
+  conPetOnlyBusy = true
+  fetch('/dsh-surfcore/api/modules', { cache: 'no-store' })
+    .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d } }) })
+    .then(function (res) {
+      if (!res.ok || !res.d || !res.d.ok) throw new Error((res.d && res.d.error) || ('HTTP ' + res.status))
+      conPetOnly = !!res.d.petOnly
+      conPetOnlyLoaded = true
+    })
+    .catch(function () { /* 读不到就按关闭显示；用户点开关时会再试一次 */ })
+    .then(function () {
+      conPetOnlyBusy = false
+      try { dshwvConSync() } catch (err) {}
+    })
+}
+function conPetOnlyToggle() {
+  if (conPetOnlyBusy) return
+  conPetOnlyBusy = true
+  var next = !conPetOnly
+  fetch('/dsh-surfcore/api/modules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ petOnly: next })
+  })
+    .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d } }) })
+    .then(function (res) {
+      if (!res.ok || !res.d || !res.d.ok) throw new Error((res.d && res.d.error) || ('HTTP ' + res.status))
+      conPetOnly = !!res.d.petOnly
+      conPetOnlyLoaded = true
+      try {
+        dshwvToast(conPetOnly ? '已开启只桌宠模式：QQ / B站 / 贴吧 / 抖音已停' : '已关闭只桌宠模式：集成服务恢复', 'ok', 2600)
+      } catch (err) {}
+    })
+    .catch(function (err) {
+      try { dshwvToast('切换只桌宠模式失败：' + (err && err.message ? err.message : err), 'no', 3200) } catch (e) {}
+    })
+    .then(function () {
+      conPetOnlyBusy = false
+      try { dshwvConSync() } catch (err) {}
+    })
+}
 // 大小滑杆两端刻度：console.html 里写死的是 8/32，实际范围被脚本改成 1~20（小鲸鱼页）/ 4~20（桌宠页）。
 // 不同步的话用户会按 8~32 理解大小，所以每次改 min/max 都顺手把两端文字一起改掉。
 function conScaleEnds(doc, min, max) {
@@ -4324,6 +4383,12 @@ function conBindExtras() {
     ex.qqenv = doc.getElementById('con-qqenv')
     // 拖拽弹簧跟手开关（仅桌宠形态有效）
     ex.spring = doc.getElementById('con-spring')
+    // 只桌宠模式总开关（集成服务一键停）
+    ex.petonlyCell = doc.getElementById('con-cell-petonly')
+    ex.petonlySw = doc.getElementById('con-petonly-sw')
+    ex.petonlyLabel = doc.getElementById('con-petonly-label')
+    ex.petonlyHint = doc.getElementById('con-petonly-hint')
+    conPetOnlyLoad()
     // 睡觉 / 叫醒（动作与待机里的按钮）
     conSleepBtn = doc.getElementById('con-sleep-btn')
     conOn(conSleepBtn, 'click', function () {
@@ -4363,6 +4428,7 @@ function conBindExtras() {
     swCell(ex.bubble, function () { try { setBubbleOn(!(bubbleOn !== false)) } catch (err) {} })
     swCell(ex.qqenv, function () { try { setQqEnvOn(!qqEnvOn) } catch (err) {} })
     swCell(ex.spring, function () { try { setDragSpringOn(!(dragSpringOn !== false)) } catch (err) {} })
+    swCell(ex.petonlySw, function () { conPetOnlyToggle() })
 
     // 厂商额度（选装）：关掉时只显示 DeepSeek 余额；打开后气泡追加所选厂商模型的额度行
     function vqOpenAdd() {
@@ -4715,6 +4781,7 @@ function dshwvConSync() {
       conSetSw(ex.bubble, bubbleOn !== false)
       conSetSw(ex.qqenv, qqEnvOn !== false)
       conSetSw(ex.spring, dragSpringOn !== false)
+      try { conPetOnlyApply() } catch (err) {}
       // 睡觉 / 叫醒按钮的文案与可用状态
       try { petSleepSyncUi() } catch (err) {}
       try {

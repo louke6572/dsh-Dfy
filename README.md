@@ -244,6 +244,7 @@ SnowLuma 是第三方专有 QQ 运行时，仓库已转私有，**不再有公�
 | 变量 | 作用 |
 |---|---|
 | `$env:DSHDFY_SKIP_SNOWLUMA='1'` | 只装挂件 / 桌宠，不接 QQ |
+| `$env:DSHDFY_PET_ONLY='1'` | 只桌宠模式：跳过 QQ 侧可选依赖与 MCP，并默认开启只桌宠模式 |
 | `$env:DSHDFY_DIR='D:\dsh-Dfy'` | 装到别的目录 |
 | `$env:DSHDFY_CHECK='1'` | 只检查环境，不安装 |
 
@@ -272,6 +273,11 @@ node scripts/install-snowluma.mjs   # 接 QQ 才需要；只检测，不再下�
 
 clone 安装与方式一使用**同一个数据目录**（`$DSH_HOME/surfcore/qq/`），所以两种安装可以互相切换，
 配置不会分叉。
+
+> **只想要桌宠**（不需要 QQ / B站 / 贴吧 / 抖音）：
+> `node scripts/setup-dsh.mjs --pet-only`。不会写入任何 QQ 侧 MCP，并自动打开
+> 「只桌宠模式」；之后可在 设置 → 维护 → 模块与能力（或桌宠控制台）随时开关，
+> 关掉即恢复集成，不用重启。
 
 ### 验证安装
 

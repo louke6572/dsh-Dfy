@@ -527,7 +527,7 @@ export function notifyOwnerIfNeeded({ callBridge, log = () => {}, config = memor
  * 插件启动时挂上：启动 8 秒后先整理一次，之后每 10 分钟一次。
  * 每日衰减由 maintainMemoryCard 自己按 dailyHour 判断，不需要单独定时器。
  */
-export function startMemoryCardTimer({ log = () => {}, callBridge } = {}) {
+export function startMemoryCardTimer({ log = () => {}, callBridge, shouldRun = () => true } = {}) {
   if (process.env.SURFCORE_DISABLE_MEMORY_TIMER === '1') {
     return { stop() {}, started: false };
   }
@@ -535,7 +535,9 @@ export function startMemoryCardTimer({ log = () => {}, callBridge } = {}) {
   let interval = null;
   let initial = null;
   const tick = async () => {
-    if (stopped) return;
+    // shouldRun：只桌宠模式等「暂时不要自动维护」的场景，跳过本轮但不销毁定时器，
+    // 条件恢复后下一轮自动继续（不用重启插件）。
+    if (stopped || !shouldRun()) return;
     try {
       const result = await runMemoryCardMaintenance();
       if (result.disabled) return;

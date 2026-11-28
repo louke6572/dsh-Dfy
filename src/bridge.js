@@ -25,7 +25,17 @@ import {
   effectiveQqConfigFile,
   migrateLegacyQqData,
 } from './config-locate.js';
-import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
+// @snowluma/sdk 是可选依赖（只桌宠模式不安装 QQ 集成）。
+// 这里不能静态 import：没装 SDK 时本文件一加载就抛 ERR_MODULE_NOT_FOUND，
+// 连带桌宠侧也起不来。改成第一次真正要连 QQ 时再加载。
+let SnowLumaWebSocketClient = null;
+let sdkText = null;
+async function loadSnowLumaSdk() {
+  if (SnowLumaWebSocketClient && sdkText) return;
+  const mod = await import('@snowluma/sdk');
+  SnowLumaWebSocketClient = mod.SnowLumaWebSocketClient;
+  sdkText = mod.text;
+}
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, ILLEGAL_CONTENT_RE } from './sensitive.js';
@@ -3105,8 +3115,8 @@ async function main(options = {}) {
           assertSendAllowed();
           const cancelAt = burstCancelAt.get(key);
           if (!isFirstPart && cfg.humanize?.burstBrake !== false && cancelAt && cancelAt > burstStartedAt) { log(`[humanize] 对方又说话了，剩余分段不发 (${key})`); return; }
-          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
-          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), sdkText(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          else await withTimeout(bot.sendGroupMessage(Number(id), sdkText(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           sentParts.push(part);
           noteSendSuccess(key);
           if (opts.mirror !== false && kind === 'private') mirrorPetMessage({ role: 'assistant', key, sender: '', text: part });
@@ -3204,8 +3214,8 @@ async function main(options = {}) {
               return;
             }
           }
-          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
-          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), sdkText(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          else await withTimeout(bot.sendGroupMessage(Number(id), sdkText(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           sentParts.push(msg);
           noteSendSuccess(key);
           sent.push(msg);
@@ -9825,6 +9835,8 @@ async function main(options = {}) {
   }
 
   // QQ 侧（SnowLuma OneBot WebSocket 客户端）
+  // 只桌宠/未安装 SDK 时这里会抛出可读错误（由 start 流程回报给设置页），不影响其它功能。
+  await loadSnowLumaSdk();
   const bot = new SnowLumaWebSocketClient({
     url: cfg.snowluma.wsUrl,
     accessToken: cfg.snowluma.accessToken || undefined,

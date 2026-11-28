@@ -89,7 +89,7 @@ import { contentTypeRejection, isLoopbackReq, json, readBody, readJsonBody, same
 import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { createCapabilityRegistry } from './capability-registry.js';
-import { CAPABILITY_MODULE, isModuleEnabled, moduleForPath, moduleList } from './modules.js';
+import { CAPABILITY_MODULE, isModuleEnabled, isPetOnly, isPetOnlyBlockedPath, moduleForPath, moduleList } from './modules.js';
 import { synthesizeEdgeToFile } from '../../src/voice-edge-tts.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../src/gate-events.js';
@@ -257,6 +257,17 @@ export const inject = ['webServer', 'connection', 'sessionController'];
 
 export function apply(ctx) {
   ensureDirs();
+
+  /**
+   * 只桌宠模式总闸（unified.petOnly）。
+   *
+   * 每次用的时候现读配置：设置页开关一保存就生效，不用重启插件。
+   * 读不到配置时按关闭处理（fail-open 只影响「省资源」，不影响桌宠本身）。
+   */
+  function petOnlyOn() {
+    try { return isPetOnly(readUnified().config); } catch { return false; }
+  }
+
   registerStickerTools({ ctx, stateDir: STATE_DIR, log: pluginLog });
   registerMemoryTools({ ctx, log: pluginLog });
 
@@ -276,7 +287,8 @@ export function apply(ctx) {
   // AstrBot 网关守护：打开 DSH 自动拉起，不用手动启动。
   const astrbotSupervisor = createAstrbotSupervisor({ log: pluginLog });
   // 内置版默认不拉起 AstrBot（省内存）；切到 AstrBot 版时再启动。
-  if (readQqRuntimeMode() === 'astrbot') astrbotSupervisor.start();
+  // 只桌宠模式不启动任何 QQ 侧服务。
+  if (!petOnlyOn() && readQqRuntimeMode() === 'astrbot') astrbotSupervisor.start();
   // AstrBot 面板 API（减法版）：插件列表/启停/安装/卸载，JWT 用它自己配置里的 secret 签。
   const astrbotApi = createAstrbotApi({ log: pluginLog });
   // 路线 B 路口：把 DSH 会话暴露成 OpenAI 兼容对话端点，AstrBot 的「OpenAI API 兼容」provider 指到这里。
@@ -415,7 +427,7 @@ export function apply(ctx) {
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
   // 自我学习：贴吧 / B站 / 抖音 的观看记录 → 经历 + 近况（定时跑，也可以在设置页手动触发）。
-  const learningLoop = createLearningLoop({ ctx, log: pluginLog, tokenBudget });
+  const learningLoop = createLearningLoop({ ctx, log: pluginLog, tokenBudget, shouldRun: () => !petOnlyOn() });
   // 记忆整理：把聊天流水合并/去噪成干净的事实（一键手动 + 每日自动）。
   const memoryOrganizer = createMemoryOrganizer({ ctx, log: pluginLog, tokenBudget });
   const petApi = createPetApiService({
@@ -483,7 +495,7 @@ export function apply(ctx) {
     resetSchedulerIdle: (reason) => { schedulerStatus = idleSchedulerStatus(reason); return schedulerStatus; },
     startSchedulerNow,
     stopBridge, startBridge, restartBridge, currentDshUrl,
-    readJsonBody, json,
+    readJsonBody, json, petOnlyOn,
   });
   const { handleCharacters } = createCharacterRoutes({
     characterDetail, characterOverview, getCharacterMigration: () => characterMigration,
@@ -627,6 +639,8 @@ export function apply(ctx) {
   const { handleCapabilities, handleModules } = createModuleRoutes({
     capabilityRegistry, moduleList, readUnified, saveUnified,
     readJsonBody, json, douyinStop, stopBridge, pluginLog,
+    isPetOnly, stopSchedulerNow, startSchedulerNow, douyinImStop,
+    astrbotStop: () => astrbotSupervisor.stop(),
   });
 
   // ── 组件更新（2026-10-26 用户要求）──────────────────────────────────────
@@ -721,6 +735,9 @@ export function apply(ctx) {
     return { qq: start.qq !== false, bili: start.bili !== false };
   }
   function platformStartEnabled(id) {
+    // 只桌宠模式：所有平台都不自动启动（同样不改用户的 platforms.start 偏好，
+    // 关掉总闸后按原设置恢复）。
+    if (petOnlyOn()) return false;
     // 模块中心停用的平台不自动启动；但**不改用户的 platforms.start 偏好**，
     // 这样重新启用模块后会自动恢复（以前停用模块会写 start=false，而启用只写
     // modules=true，导致 QQ 永久不再自动启动、界面里也没有入口恢复）。
@@ -812,6 +829,7 @@ export function apply(ctx) {
       saveQqConfig(planned.qq);
       pluginLog('管理员称呼已补齐到 QQ config.json（桥接重启后生效）');
       setTimeout(() => {
+        if (petOnlyOn()) return;
         void bridgeStatus().then((st) => {
           if (!st.running) return;
           return restartBridge({ dshWebUrl: currentDshUrl() });
@@ -839,7 +857,10 @@ export function apply(ctx) {
         pluginLog(`角色系统：已从旧数据迁移出「${result.character?.name ?? result.current?.name}」（备份 ${maskPath(result.backupDir)}）`);
         writeCharacterRolePointer();
         // 桥接可能已经在跑旧路径：给它一次重启，让它读新角色目录。
-        setTimeout(() => { void bridgeStatus().then((st) => { if (st.running) return restartBridge({ dshWebUrl: currentDshUrl() }); }).catch(() => {}); }, 1500).unref?.();
+        setTimeout(() => {
+          if (petOnlyOn()) return;
+          void bridgeStatus().then((st) => { if (st.running) return restartBridge({ dshWebUrl: currentDshUrl() }); }).catch(() => {});
+        }, 1500).unref?.();
       }
       return result;
     } catch (error) {
@@ -959,11 +980,14 @@ export function apply(ctx) {
 
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
-  memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+  // 只桌宠模式：这两个维护任务会读 QQ/B站/桌宠记忆、必要时调模型，
+  // 交给 shouldRun 在每个 tick 自行跳过；关掉总闸后自动恢复。
+  memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge, shouldRun: () => !petOnlyOn() });
   // 自我学习：启动 10 分钟后第一次，之后按 learning.intervalHours（默认 6 小时）。
   learningLoop.start();
   // 记忆整理：每小时检查一次；只有「开关开 + 距上次 20h + 记录够多」才真正调模型。
   memoryOrganizeTimer = setInterval(() => {
+    if (petOnlyOn()) return;
     void (async () => {
       try {
         const cfg = readUnified().config?.memoryCard ?? {};
@@ -984,6 +1008,7 @@ export function apply(ctx) {
 
   // 角色自动存档：启动 10 秒后跑一次，之后每 6 小时检查（每天最多一份 + 11 个年龄档轮换）。
   const runCharacterAutoSave = () => {
+    if (petOnlyOn()) return;
     const cur = readCurrentCharacter();
     if (!cur) return;
     try {
@@ -1004,12 +1029,15 @@ export function apply(ctx) {
   // 「Cannot access 'startSyncTimer' before initialization」，插件看起来装好了却完全不工作。
   function startSyncTimer() {
     if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
+    if (petOnlyOn()) return;
     const unified = readUnified().config;
     if (unified.memory?.qqToBili?.enabled !== true) return;
     setTimeout(() => {
+      if (petOnlyOn()) return;
       try { syncQqToBili(); } catch (error) { pluginLog('首次 QQ→B站 同步失败：', error?.message ?? error); }
     }, 20_000).unref?.();
     syncTimer = setInterval(() => {
+      if (petOnlyOn()) return;
       try { syncQqToBili(); } catch (error) { pluginLog('定时 QQ→B站 同步失败：', error?.message ?? error); }
     }, Math.max(5 * 60_000, Number(unified.memory?.qqToBili?.intervalMs) || 30 * 60_000));
   }
@@ -1106,6 +1134,7 @@ export function apply(ctx) {
   let bridgeRepairCooldownUntil = 0;
   const maybeAutoStartBridge = async () => {
     if (bridgeRepairBusy) return;
+    if (petOnlyOn()) return;
     bridgeRepairBusy = true;
     try {
       if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return;
@@ -1716,6 +1745,21 @@ export function apply(ctx) {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
+    // /config 与 /modules 永远可达：只桌宠模式必须留一个入口把自己关掉。
+    if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
+    // 模块闸门：被停用的模块，它的接口前缀一律 410（核心接口不在映射表里，永远放行）。
+    const gatedModule = moduleForPath(pathname, API_PREFIX);
+    if (petOnlyOn() && isPetOnlyBlockedPath(pathname, API_PREFIX)) {
+      json(res, 410, {
+        ok: false, code: 'PET_ONLY', module: gatedModule || '',
+        error: '只桌宠模式已开启：QQ / B站 / 贴吧 / 抖音等集成服务已关闭。可在 维护 → 模块与能力 关闭「只桌宠模式」。',
+      });
+      return;
+    }
+    if (gatedModule && !isModuleEnabled(readUnified().config, gatedModule)) {
+      json(res, 410, { ok: false, code: 'MODULE_DISABLED', module: gatedModule, error: `模块「${gatedModule}」已停用，可在 维护 → 模块与能力 启用。` });
+      return;
+    }
     if (pathname === `${API_PREFIX}/qq-runtime`) {
       if (req.method === 'GET') {
         json(res, 200, { ok: true, mode: readQqRuntimeMode(), bridge: await bridgeStatus().catch(() => ({})), astrbot: await astrbotSupervisor.status().catch(() => ({})) });
@@ -1725,13 +1769,6 @@ export function apply(ctx) {
       const runtimeBody = await readJsonBody(req);
       const result = await setQqRuntimeMode(runtimeBody.mode);
       json(res, 200, result);
-      return;
-    }
-    if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
-    // 模块闸门：被停用的模块，它的接口前缀一律 410（核心接口不在映射表里，永远放行）。
-    const gatedModule = moduleForPath(pathname, API_PREFIX);
-    if (gatedModule && !isModuleEnabled(readUnified().config, gatedModule)) {
-      json(res, 410, { ok: false, code: 'MODULE_DISABLED', module: gatedModule, error: `模块「${gatedModule}」已停用，可在 维护 → 模块与能力 启用。` });
       return;
     }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
@@ -2283,6 +2320,7 @@ export function apply(ctx) {
    */
   let bridgeHealthBusy = false;
   async function ensureBridgePluginHealth() {
+    if (petOnlyOn()) return;
     if (bridgeHealthBusy) return;
     bridgeHealthBusy = true;
     try {
@@ -2390,7 +2428,10 @@ export function apply(ctx) {
   void ensureBridgePluginHealth();
   const bridgeHealthTimer = setInterval(() => { void ensureBridgePluginHealth(); }, 120_000);
   bridgeHealthTimer.unref?.();
-  const qqBridgeHostTimer = setInterval(() => { writeQqBridgeHostFile(); }, 60_000);
+  const qqBridgeHostTimer = setInterval(() => {
+    if (petOnlyOn()) return;
+    writeQqBridgeHostFile();
+  }, 60_000);
   qqBridgeHostTimer.unref?.();
   // 目的机制（桌宠载体）：carrier=pet 时由这里每 60 秒 tick；carrier=qq 时它自己会退出。
   try { petPurpose.start(); } catch (error) { pluginLog('[pet-purpose] 启动失败：', String(error?.message ?? error)); }
@@ -2406,12 +2447,18 @@ export function apply(ctx) {
 
   // 抖音的自动轮次跟 B站 生物钟分开：B站 没登录时生物钟不启动，
   // 但抖音是独立的第四个平台，必须按自己的时段走。
-  const douyinTimer = setInterval(() => { douyinAutoTick().catch(() => {}); }, 60_000);
+  const douyinTimer = setInterval(() => {
+    if (petOnlyOn()) return;
+    douyinAutoTick().catch(() => {});
+  }, 60_000);
   douyinTimer.unref?.();
-  const douyinStartupTimer = setTimeout(() => { douyinAutoTick().catch(() => {}); }, 25_000);
+  const douyinStartupTimer = setTimeout(() => {
+    if (petOnlyOn()) return;
+    douyinAutoTick().catch(() => {});
+  }, 25_000);
   douyinStartupTimer.unref?.();
   // 旧的浏览器私信方案已退役：只有显式打开 legacyBrowser 时才继续跑（默认走 douyin-im）。
-  const legacyBrowserChat = readUnified().config?.douyin?.chat?.legacyBrowser === true;
+  const legacyBrowserChat = !petOnlyOn() && readUnified().config?.douyin?.chat?.legacyBrowser === true;
   const douyinChatTimer = legacyBrowserChat ? setTimeout(() => { douyinChatResume().catch(() => {}); }, 35_000) : null;
   douyinChatTimer?.unref?.();
   // 旧的群聊守护：同样只在 legacyBrowser 模式下工作，避免和 douyin-im 重复回复。
@@ -2429,9 +2476,12 @@ export function apply(ctx) {
   }, 60_000) : null;
   douyinChatWatchdog?.unref?.();
   // 新方案：douyin-im 长连接（不用浏览器）。开关开着且登录过就自动恢复。
-  scheduleDouyinImResume();
-  // 调试用：IM 目录里有 selftest.flag 时，启动后自动验证一次「消息 → DSH 会话 → 回复」。
-  scheduleDouyinImSelftest();
+  // 只桌宠模式下不恢复任何抖音连接。
+  if (!petOnlyOn()) {
+    scheduleDouyinImResume();
+    // 调试用：IM 目录里有 selftest.flag 时，启动后自动验证一次「消息 → DSH 会话 → 回复」。
+    scheduleDouyinImSelftest();
+  }
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {

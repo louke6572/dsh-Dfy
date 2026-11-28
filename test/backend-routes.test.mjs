@@ -20,6 +20,7 @@ import { createDiagnosticsRoutes } from '../backend/lib/routes/diagnostics.js';
 import { createSnowLumaRoutes } from '../backend/lib/routes/snowluma.js';
 import { createConsoleExtrasRoutes } from '../backend/lib/routes/console-extras.js';
 import { createModuleRoutes } from '../backend/lib/routes/modules.js';
+import { isPetOnlyBlockedPath } from '../backend/lib/modules.js';
 import { createBiliTiebaRoutes } from '../backend/lib/routes/bili-tieba.js';
 import { createPlatformRoutes } from '../backend/lib/routes/platforms.js';
 
@@ -718,6 +719,49 @@ test('模块路由：停用 QQ/抖音会停对应运行时，未知模块 400', 
   assert.deepEqual(saved, { modules: { qq: false } });
   await routes.handleModules({ method: 'POST', body: { id: 'douyin', enabled: false } }, {});
   assert.deepEqual(calls, ['stopBridge', 'douyinStop']);
+});
+
+test('模块路由：只桌宠模式停所有集成运行时，关闭后恢复生物钟', async () => {
+  const calls = [];
+  let saved = null;
+  const { out, json } = makeRes();
+  const routes = createModuleRoutes({
+    capabilityRegistry: { snapshot: () => ({}), switchTo: async () => ({}), runContract: async () => ({}), resetStats: () => ({}) },
+    moduleList: () => [],
+    readUnified: () => ({ config: saved ?? {} }),
+    saveUnified: (patch) => { saved = patch; },
+    readJsonBody: async (req) => req.body ?? {},
+    json,
+    douyinStop: async () => { calls.push('douyinStop'); },
+    stopBridge: async () => { calls.push('stopBridge'); },
+    douyinImStop: async () => { calls.push('douyinImStop'); },
+    astrbotStop: () => { calls.push('astrbotStop'); },
+    stopSchedulerNow: () => { calls.push('stopSchedulerNow'); },
+    startSchedulerNow: () => { calls.push('startSchedulerNow'); },
+    pluginLog: () => {},
+  });
+
+  await routes.handleModules({ method: 'POST', body: { petOnly: true } }, {});
+  assert.deepEqual(saved, { petOnly: true });
+  assert.equal(out.body.petOnly, true);
+  assert.deepEqual(calls, ['stopBridge', 'douyinStop', 'douyinImStop', 'astrbotStop', 'stopSchedulerNow']);
+
+  await routes.handleModules({ method: 'POST', body: { petOnly: false } }, {});
+  assert.deepEqual(saved, { petOnly: false });
+  assert.equal(out.body.petOnly, false);
+  assert.equal(calls.at(-1), 'startSchedulerNow');
+});
+
+test('只桌宠模式：只放行桌宠与桌宠自己的配置接口', () => {
+  const api = '/dsh-surfcore/api';
+  for (const pathname of ['/pet', '/pet/chat', '/characters', '/persona', '/voice/preview', '/memory-card/full']) {
+    assert.equal(isPetOnlyBlockedPath(`${api}${pathname}`, api), false, pathname);
+  }
+  for (const pathname of ['/qq-runtime', '/bridge', '/astrbot/panel', '/snowluma', '/platforms', '/platform-hub', '/mode', '/douyin/status', '/bili/status', '/tieba/status', '/memory/status', '/align']) {
+    assert.equal(isPetOnlyBlockedPath(`${api}${pathname}`, api), true, pathname);
+  }
+  // /models 不能被 /mode 误伤
+  assert.equal(isPetOnlyBlockedPath(`${api}/models`, api), false);
 });
 
 function makeBiliTiebaDeps(overrides = {}) {

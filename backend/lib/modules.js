@@ -47,6 +47,30 @@ const ROUTE_RULES = [
   ['/group-policy', 'qq'],
 ];
 
+// 只桌宠模式额外要关掉的「集成面」前缀。
+// 故意不复用 ROUTE_RULES：那些接口不属于某个设置页（停用 QQ 模块时平台页仍要能看），
+// 只有「这份安装只要桌宠」时才需要一起关。
+const PET_ONLY_EXTRA_RULES = [
+  '/qq-runtime',
+  '/bridge',
+  '/astrbot',
+  '/snowluma',
+  '/platforms',
+  '/platform-hub',
+  '/mode',
+];
+
+// 只桌宠模式仍然放行的模块接口：这些是桌宠自己要用的配置。
+//   · characters / persona：桌宠的角色卡、人设与心情；
+//   · voice：桌宠朗读用的音色与试听；
+//   · memory-card：角色的长期记忆卡（和 QQ⇄B站 的「记忆同步」是两回事）。
+const PET_ONLY_ALLOW_RULES = [
+  '/characters',
+  '/persona',
+  '/voice',
+  '/memory-card',
+];
+
 export function moduleForPath(pathname, apiPrefix) {
   const rest = String(pathname ?? '').slice(String(apiPrefix).length);
   for (const [prefix, id] of ROUTE_RULES) {
@@ -59,6 +83,32 @@ export function isModuleEnabled(config, id) {
   const modules = config?.modules;
   if (!modules || typeof modules !== 'object') return true;
   return modules[id] !== false;
+}
+
+/**
+ * 只桌宠模式（unified.petOnly）。
+ *
+ * 和 modules 的分工：modules 是「这个设置页要不要」；petOnly 是「这份安装只要桌宠」，
+ * 打开后平台集成（QQ/B站/贴吧/抖音）与记忆同步不再自动启动、后台定时器跳过，
+ * 对应接口返回 410。桌宠自己的角色/人设/语音/记忆卡接口保持可用；关掉即恢复。
+ */
+export function isPetOnly(config) {
+  return config?.petOnly === true;
+}
+
+/**
+ * 只桌宠模式下这个接口是否应当拒绝（410）。
+ * 放行：桌宠自身（pet）、核心接口（config / modules / capabilities / overview / logs…）。
+ * 拒绝：其它模块的接口 + PET_ONLY_EXTRA_RULES 里的集成面。
+ */
+export function isPetOnlyBlockedPath(pathname, apiPrefix) {
+  const rest = String(pathname ?? '').slice(String(apiPrefix).length);
+  // 精确匹配或「前缀 + /」：`/mode` 不能误伤 `/models`。
+  const hit = (rules) => rules.some((prefix) => rest === prefix || rest.startsWith(`${prefix}/`));
+  if (hit(PET_ONLY_ALLOW_RULES)) return false;
+  if (hit(PET_ONLY_EXTRA_RULES)) return true;
+  const moduleId = moduleForPath(pathname, apiPrefix);
+  return Boolean(moduleId && moduleId !== 'pet');
 }
 
 export function moduleList(config) {
